@@ -1,6 +1,14 @@
-import { RES, shade, type Ctx } from "./iso";
+import { shade } from "./util";
 import type { Look } from "./employees";
 import type { Dir } from "./layout";
+
+type Ctx = CanvasRenderingContext2D;
+
+/**
+ * Pixel density of the portraits: sprites are authored in design units and
+ * drawn RES times denser, with 1px outlines and details.
+ */
+export const RES = 2;
 
 export type Pose = "stand" | "walk" | "sit" | "type" | "drink" | "write";
 

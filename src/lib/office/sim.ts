@@ -1,4 +1,4 @@
-import type { Vec } from "./iso";
+import type { Vec } from "./util";
 import type { Pose } from "./character";
 import { EMPLOYEES, type Employee } from "./employees";
 import { DESKS, POIS, type Activity, type DeskSlot, type Dir, type IconName, type Poi } from "./layout";

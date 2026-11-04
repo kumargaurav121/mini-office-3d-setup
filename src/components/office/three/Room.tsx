@@ -3,8 +3,8 @@
 import { useMemo, useRef, type RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { hash } from "@/lib/office/iso";
-import { ROOM_D, ROOM_W, SLAB, WALL_H, WALL_T } from "@/lib/office/layout";
+import { hash } from "@/lib/office/util";
+import { DOOR_H, NORTH_DOOR, ROOM_D, ROOM_W, SLAB, WALL_H, WALL_T, WEST_DOOR } from "@/lib/office/layout";
 import { Block, K, LeftWallPanel, mat, RightWallPanel, unitBox } from "./primitives";
 
 const W = ROOM_W;
@@ -28,7 +28,6 @@ export function Room() {
       ))}
       <Sunlight />
       <Whiteboard />
-      <Poster />
       <Picture />
       <UpperCabinet />
       <Clock />
@@ -109,29 +108,71 @@ function Rugs() {
   );
 }
 
+type Span = { from: number; to: number };
+
+/** The parts of [a, b] on either side of a doorway. */
+const around = (a: number, b: number, door: Span): [number, number][] => [
+  [a, door.from],
+  [door.to, b],
+];
+
+/** Panel-line positions every half tile, skipping the doorway. */
+const panelLines = (length: number, door: Span) =>
+  Array.from({ length: length * 2 - 1 }, (_, i) => (i + 1) * 0.5).filter((v) => v < door.from - 0.05 || v > door.to + 0.05);
+
+const TRIM = "#7d6553";
+const THRESHOLD = "#b98250";
+
 function Walls() {
-  const lines = (n: number) => Array.from({ length: n * 2 - 1 }, (_, i) => (i + 1) * 0.5);
+  const n = NORTH_DOOR;
+  const w = WEST_DOOR;
   return (
     <>
-      {/* Structural walls; their exposed tops and cut ends read as the darker trim. */}
-      <Block x={-T} y={-T} z={-SLAB} w={W + T} d={T} h={H + SLAB} color="#8c7564" />
-      <Block x={-T} y={0} z={-SLAB} w={T} d={D} h={H + SLAB} color="#a08a78" />
+      {/* Structural walls, split around the doorways; tops and cut ends read as the darker trim. */}
+      {around(-T, W, n).map(([a, b]) => (
+        <Block key={`n${a}`} x={a} y={-T} z={-SLAB} w={b - a} d={T} h={H + SLAB} color="#8c7564" />
+      ))}
+      <Block x={n.from} y={-T} z={DOOR_H} w={n.to - n.from} d={T} h={H - DOOR_H} color="#8c7564" />
+      <Block x={n.from} y={-T} z={-SLAB} w={n.to - n.from} d={T} h={SLAB} color={THRESHOLD} />
+      {around(0, D, w).map(([a, b]) => (
+        <Block key={`w${a}`} x={-T} y={a} z={-SLAB} w={T} d={b - a} h={H + SLAB} color="#a08a78" />
+      ))}
+      <Block x={-T} y={w.from} z={DOOR_H} w={T} d={w.to - w.from} h={H - DOOR_H} color="#a08a78" />
+      <Block x={-T} y={w.from} z={-SLAB} w={T} d={w.to - w.from} h={SLAB} color={THRESHOLD} />
 
-      <RightWallPanel x0={0} x1={W} z0={0} z1={H} color="#f1e7d6" layer={0.5} />
-      <RightWallPanel x0={0} x1={W} z0={0} z1={20} color="#9bb59e" />
-      {lines(W).map((x) => (
+      {/* North wall finish */}
+      {around(0, W, n).map(([a, b]) => (
+        <group key={`nf${a}`}>
+          <RightWallPanel x0={a} x1={b} z0={0} z1={H} color="#f1e7d6" layer={0.5} />
+          <RightWallPanel x0={a} x1={b} z0={0} z1={20} color="#9bb59e" />
+          <RightWallPanel x0={a} x1={b} z0={20} z1={22} color="#6e8c74" layer={2} />
+          <RightWallPanel x0={a} x1={b} z0={0} z1={3} color="#5c7562" layer={2} />
+        </group>
+      ))}
+      <RightWallPanel x0={n.from} x1={n.to} z0={DOOR_H} z1={H} color="#f1e7d6" layer={0.5} />
+      {panelLines(W, n).map((x) => (
         <RightWallPanel key={x} x0={x - 0.015} x1={x + 0.015} z0={4} z1={19} color="#8ca890" layer={1.5} />
       ))}
-      <RightWallPanel x0={0} x1={W} z0={20} z1={22} color="#6e8c74" layer={2} />
-      <RightWallPanel x0={0} x1={W} z0={0} z1={3} color="#5c7562" layer={2} />
+      <RightWallPanel x0={n.from - 0.06} x1={n.from} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
+      <RightWallPanel x0={n.to} x1={n.to + 0.06} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
+      <RightWallPanel x0={n.from - 0.06} x1={n.to + 0.06} z0={DOOR_H} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
 
-      <LeftWallPanel y0={0} y1={D} z0={0} z1={H} color="#e3d6c0" layer={0.5} />
-      <LeftWallPanel y0={0} y1={D} z0={0} z1={20} color="#88a38c" />
-      {lines(D).map((y) => (
+      {/* West wall finish */}
+      {around(0, D, w).map(([a, b]) => (
+        <group key={`wf${a}`}>
+          <LeftWallPanel y0={a} y1={b} z0={0} z1={H} color="#e3d6c0" layer={0.5} />
+          <LeftWallPanel y0={a} y1={b} z0={0} z1={20} color="#88a38c" />
+          <LeftWallPanel y0={a} y1={b} z0={20} z1={22} color="#5f7d66" layer={2} />
+          <LeftWallPanel y0={a} y1={b} z0={0} z1={3} color="#4f6855" layer={2} />
+        </group>
+      ))}
+      <LeftWallPanel y0={w.from} y1={w.to} z0={DOOR_H} z1={H} color="#e3d6c0" layer={0.5} />
+      {panelLines(D, w).map((y) => (
         <LeftWallPanel key={y} y0={y - 0.015} y1={y + 0.015} z0={4} z1={19} color="#7a957e" layer={1.5} />
       ))}
-      <LeftWallPanel y0={0} y1={D} z0={20} z1={22} color="#5f7d66" layer={2} />
-      <LeftWallPanel y0={0} y1={D} z0={0} z1={3} color="#4f6855" layer={2} />
+      <LeftWallPanel y0={w.from - 0.06} y1={w.from} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
+      <LeftWallPanel y0={w.to} y1={w.to + 0.06} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
+      <LeftWallPanel y0={w.from - 0.06} y1={w.to + 0.06} z0={DOOR_H} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
     </>
   );
 }
@@ -242,20 +283,6 @@ function Whiteboard() {
       <Block x={0} y={y0 + 0.4} z={z0 - 1} w={0.14} d={y1 - y0 - 0.8} h={1} color="#c6ccd6" />
       <Block x={0.03} y={y0 + 0.7} z={z0} w={0.06} d={0.16} h={1} color="#e84a5f" />
       <Block x={0.03} y={y0 + 1.0} z={z0} w={0.06} d={0.16} h={1} color="#3a5ba8" />
-    </>
-  );
-}
-
-function Poster() {
-  const x0 = 6.12;
-  const x1 = 6.68;
-  return (
-    <>
-      <RightWallPanel x0={x0} x1={x1} z0={24} z1={42} color="#2a2438" layer={2.5} />
-      <RightWallPanel x0={x0 + 0.05} x1={x1 - 0.05} z0={25} z1={41} color="#f6efe1" layer={3} />
-      <RightWallPanel x0={x0 + 0.12} x1={x1 - 0.12} z0={33} z1={39} color="#e84a5f" layer={3.5} />
-      <RightWallPanel x0={x0 + 0.12} x1={x1 - 0.12} z0={28} z1={31} color="#2a2438" layer={3.5} />
-      <RightWallPanel x0={x0 + 0.12} x1={x0 + 0.3} z0={26} z1={27} color="#2a2438" layer={3.5} />
     </>
   );
 }

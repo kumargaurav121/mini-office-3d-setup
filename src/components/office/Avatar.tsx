@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { drawCharacter } from "@/lib/office/character";
-import { RES } from "@/lib/office/iso";
+import { drawCharacter, RES } from "@/lib/office/character";
 import type { Look } from "@/lib/office/employees";
 
 /** Head-and-shoulders portrait using the same sprite as the office. */

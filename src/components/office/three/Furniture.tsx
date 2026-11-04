@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { hash, type Vec } from "@/lib/office/iso";
+import { hash, type Vec } from "@/lib/office/util";
 import type { DeskItem } from "@/lib/office/employees";
 import { DESKS, FURNITURE, type DeskSlot, type Dir, type Furniture as FurnitureDef } from "@/lib/office/layout";
 import { isBrewing, isTyping, type Agent, type OfficeSim } from "@/lib/office/sim";

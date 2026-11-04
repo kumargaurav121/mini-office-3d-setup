@@ -3,7 +3,7 @@
 import { useRef, type RefObject } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
-import { shade } from "@/lib/office/iso";
+import { shade } from "@/lib/office/util";
 import type { Look } from "@/lib/office/employees";
 import { SEAT_Z, type Dir } from "@/lib/office/layout";
 import { agentPose, isSeated, type Agent } from "@/lib/office/sim";

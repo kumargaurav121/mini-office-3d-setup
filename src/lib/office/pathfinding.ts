@@ -1,4 +1,4 @@
-import type { Vec } from "./iso";
+import type { Vec } from "./util";
 import { CHAIR_HALF, DESKS, FURNITURE, ROOM_D, ROOM_W } from "./layout";
 
 // Walk graph: nodes every half tile, 4-connected along the iso axes so

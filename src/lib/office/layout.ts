@@ -1,4 +1,5 @@
-import { RES, type Vec } from "./iso";
+import type { Vec } from "./util";
+import type { Cell } from "./rooms";
 
 // Room: gx runs along the right-hand wall, gy along the left-hand wall.
 export const ROOM_W = 12;
@@ -9,10 +10,21 @@ export const SLAB = 8;
 /** Height of chair seats and couch cushions, in pixels. */
 export const SEAT_Z = 7;
 
-// Render buffer; the canvas scales it up with nearest-neighbour.
-export const BUFFER_W = 384 * RES;
-export const BUFFER_H = 268 * RES;
-export const ORIGIN: Vec = { x: 178 * RES, y: 76 * RES };
+/** Tiles between neighbouring rooms, spanned by a bridge. */
+export const ROOM_GAP = 4;
+
+/**
+ * Doorways in the two walled sides, where bridges to the north and west
+ * attach. Bridges to the east/south line up with them on the open sides.
+ */
+export const DOOR_H = 32;
+export const NORTH_DOOR = { from: 6.02, to: 6.78 }; // along x, in the wall at y = 0
+export const WEST_DOOR = { from: 5.65, to: 6.55 }; // along y, in the wall at x = 0
+
+/** Grid cell -> position of the room's (0, 0) corner, in tiles. */
+export function roomOrigin(cell: Cell): Vec {
+  return { x: cell.x * (ROOM_W + ROOM_GAP), y: cell.z * (ROOM_D + ROOM_GAP) };
+}
 
 /** Facing on screen: SE = +gx, SW = +gy, NE = -gy, NW = -gx. */
 export type Dir = "SE" | "SW" | "NE" | "NW";

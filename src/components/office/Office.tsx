@@ -2,30 +2,32 @@
 
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import dynamic from "next/dynamic";
-import { EMPLOYEES } from "@/lib/office/employees";
-import { OfficeSim } from "@/lib/office/sim";
-import { OfficeCanvas } from "./OfficeCanvas";
+import { addRoom } from "@/app/office-actions";
+import { roomIdOfAgent } from "@/lib/office/crew";
+import type { OpenSide, RoomRecord } from "@/lib/office/rooms";
+import { OfficeWorld } from "@/lib/office/world";
+import { RepoPicker } from "./RepoPicker";
 import { Roster } from "./Roster";
+import type { Focus } from "./three/Office3D";
 
 // three.js only loads in the browser, in its own chunk.
 const Office3D = dynamic(() => import("./three/Office3D"), { ssr: false, loading: () => <StageLoading /> });
 
-type View = "3d" | "pixel";
-
-export function Office() {
-  const [sim] = useState(() => new OfficeSim(EMPLOYEES));
-  const statuses = useSyncExternalStore(sim.subscribe, sim.getSnapshot, sim.getSnapshot);
+export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
+  const [world] = useState(() => new OfficeWorld(initialRooms));
+  const snapshot = useSyncExternalStore(world.subscribe, world.getSnapshot, world.getSnapshot);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [view, setView] = useState<View>("3d");
+  const [focus, setFocus] = useState<Focus>({ roomId: null, n: 0 });
+  const [adding, setAdding] = useState<OpenSide | null>(null);
 
   useEffect(() => {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const apply = () => sim.setCalm(reduce.matches);
+    const apply = () => world.setCalm(reduce.matches);
     apply();
     reduce.addEventListener("change", apply);
     return () => reduce.removeEventListener("change", apply);
-  }, [sim]);
+  }, [world]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -35,7 +37,26 @@ export function Office() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const working = statuses.filter((s) => s.activity === "working").length;
+  const focusRoom = (roomId: string | null) => setFocus((f) => ({ roomId, n: f.n + 1 }));
+
+  const selectFromRoster = (id: string | null) => {
+    setSelectedId(id);
+    if (id) focusRoom(roomIdOfAgent(id));
+  };
+
+  const pickFolder = async (path: string): Promise<string | null> => {
+    if (!adding) return null;
+    const res = await addRoom(path, adding.cell);
+    if (!res.ok) return res.error;
+    world.syncRooms(res.value);
+    const added = res.value.find((r) => r.cell.x === adding.cell.x && r.cell.z === adding.cell.z);
+    setAdding(null);
+    if (added) focusRoom(added.id);
+    return null;
+  };
+
+  const working = snapshot.statuses.filter((s) => s.activity === "working").length;
+  const anchorRoom = adding ? snapshot.rooms.find((r) => r.id === adding.roomId) : undefined;
 
   return (
     <div className="flex min-h-dvh flex-col lg:h-dvh">
@@ -45,67 +66,53 @@ export function Office() {
           <div>
             <h1 className="font-pixel text-xl leading-none">Mini Office</h1>
             <p className="mt-1 font-mono text-[11px] text-muted">
-              Floor 1 · {EMPLOYEES.length} employees
+              {snapshot.rooms.length} {snapshot.rooms.length === 1 ? "room" : "rooms"} · {snapshot.statuses.length} agents
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-          <div className="flex gap-2" aria-live="polite">
-            <Chip dot="bg-emerald-400">{working} working</Chip>
-            <Chip dot="bg-amber-400">{statuses.length - working} away from desk</Chip>
-          </div>
-          <div role="group" aria-label="View" className="flex border-2 border-line bg-bg">
-            {(["3d", "pixel"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={view === v}
-                onClick={() => setView(v)}
-                className={`px-2.5 py-1 focus-visible:outline-2 focus-visible:outline-accent ${
-                  view === v ? "bg-accent text-[#1d1a2b]" : "text-muted hover:text-ink"
-                }`}
-              >
-                {v === "3d" ? "3D" : "Pixel"}
-              </button>
-            ))}
-          </div>
+        <div className="flex gap-2 font-mono text-[11px]" aria-live="polite">
+          <Chip dot="bg-emerald-400">{working} working</Chip>
+          <Chip dot="bg-amber-400">{snapshot.statuses.length - working} away from desk</Chip>
         </div>
       </header>
       <main className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {view === "3d" ? (
-          <Office3D
-            sim={sim}
-            statuses={statuses}
-            selectedId={selectedId}
-            hoveredId={hoveredId}
-            onHover={setHoveredId}
-            onSelect={setSelectedId}
-          />
-        ) : (
-          <OfficeCanvas
-            sim={sim}
-            statuses={statuses}
-            selectedId={selectedId}
-            hoveredId={hoveredId}
-            onHover={setHoveredId}
-            onSelect={setSelectedId}
-          />
-        )}
+        <Office3D
+          world={world}
+          snapshot={snapshot}
+          selectedId={selectedId}
+          hoveredId={hoveredId}
+          focus={focus}
+          onHover={setHoveredId}
+          onSelect={setSelectedId}
+          onFocusRoom={focusRoom}
+          onAddRoom={setAdding}
+        />
         <Roster
-          statuses={statuses}
+          snapshot={snapshot}
           selectedId={selectedId}
           hoveredId={hoveredId}
           onHover={setHoveredId}
-          onSelect={setSelectedId}
+          onSelect={selectFromRoster}
+          onFocusRoom={focusRoom}
         />
       </main>
+      {adding && anchorRoom && (
+        <RepoPicker
+          key={`${adding.roomId}:${adding.side}`}
+          side={adding.side}
+          roomName={anchorRoom.name}
+          usedPaths={new Set(snapshot.rooms.map((r) => r.path))}
+          onPick={pickFolder}
+          onClose={() => setAdding(null)}
+        />
+      )}
     </div>
   );
 }
 
 function StageLoading() {
   return (
-    <div className="stage flex aspect-[384/268] w-full items-center justify-center lg:aspect-auto lg:min-h-0 lg:flex-1">
+    <div className="stage flex aspect-[4/3] w-full items-center justify-center lg:aspect-auto lg:min-h-0 lg:flex-1">
       <span className="animate-pulse font-pixel text-muted">Building the office…</span>
     </div>
   );
