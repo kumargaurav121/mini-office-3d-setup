@@ -14,12 +14,12 @@ export const SEAT_Z = 7;
 export const ROOM_GAP = 4;
 
 /**
- * Doorways in the two walled sides, where bridges to the north and west
- * attach. Bridges to the east/south line up with them on the open sides.
+ * Doorways, one in each wall, where bridges attach. Opposite walls share a
+ * span so bridges between neighbouring rooms meet head-on.
  */
 export const DOOR_H = 32;
-export const NORTH_DOOR = { from: 6.02, to: 6.78 }; // along x, in the wall at y = 0
-export const WEST_DOOR = { from: 5.65, to: 6.55 }; // along y, in the wall at x = 0
+export const NS_DOOR = { from: 6.02, to: 6.78 }; // along x, in the north and south walls
+export const EW_DOOR = { from: 5.65, to: 6.55 }; // along y, in the east and west walls
 
 /** Grid cell -> position of the room's (0, 0) corner, in tiles. */
 export function roomOrigin(cell: Cell): Vec {

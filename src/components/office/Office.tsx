@@ -2,13 +2,13 @@
 
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import dynamic from "next/dynamic";
-import { addRoom } from "@/app/office-actions";
+import { addRoom, moveRoom, removeRoom, type ActionResult } from "@/app/office-actions";
 import { roomIdOfAgent } from "@/lib/office/crew";
-import type { OpenSide, RoomRecord } from "@/lib/office/rooms";
+import { MAIN_ROOM_ID, type Cell, type OpenSide, type RoomRecord } from "@/lib/office/rooms";
 import { OfficeWorld } from "@/lib/office/world";
 import { RepoPicker } from "./RepoPicker";
 import { Roster } from "./Roster";
-import type { Focus } from "./three/Office3D";
+import type { Focus } from "./three/CameraRig";
 
 // three.js only loads in the browser, in its own chunk.
 const Office3D = dynamic(() => import("./three/Office3D"), { ssr: false, loading: () => <StageLoading /> });
@@ -18,8 +18,11 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
   const snapshot = useSyncExternalStore(world.subscribe, world.getSnapshot, world.getSnapshot);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [focus, setFocus] = useState<Focus>({ roomId: null, n: 0 });
+  const [focus, setFocus] = useState<Focus>({ roomId: null, request: 0 });
+  const [openRoomId, setOpenRoomId] = useState(MAIN_ROOM_ID);
   const [adding, setAdding] = useState<OpenSide | null>(null);
+  const [movingId, setMovingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -31,13 +34,53 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSelectedId(null);
+      if (e.key !== "Escape") return;
+      setMovingId(null);
+      setSelectedId(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const focusRoom = (roomId: string | null) => setFocus((f) => ({ roomId, n: f.n + 1 }));
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [notice]);
+
+  /** Fly to a room and open it (lower its walls); null flies out to the whole office. */
+  const focusRoom = (roomId: string | null) => {
+    setFocus((f) => ({ roomId, request: f.request + 1 }));
+    if (roomId) setOpenRoomId(roomId);
+  };
+
+  /** Apply a room-list change from the server, or show why it failed. */
+  const applyRooms = (res: ActionResult<RoomRecord[]>): RoomRecord[] | null => {
+    if (!res.ok) {
+      setNotice(res.error);
+      return null;
+    }
+    world.syncRooms(res.value);
+    return res.value;
+  };
+
+  const moveTo = async (cell: Cell) => {
+    const id = movingId;
+    if (!id) return;
+    setMovingId(null);
+    if (applyRooms(await moveRoom(id, cell))) focusRoom(id);
+  };
+
+  const remove = async (id: string) => {
+    if (!applyRooms(await removeRoom(id))) return;
+    if (selectedId && roomIdOfAgent(selectedId) === id) setSelectedId(null);
+    if (openRoomId === id) focusRoom(MAIN_ROOM_ID);
+  };
+
+  const selectInScene = (id: string | null) => {
+    setSelectedId(id);
+    if (id) setOpenRoomId(roomIdOfAgent(id));
+  };
 
   const selectFromRoster = (id: string | null) => {
     setSelectedId(id);
@@ -82,10 +125,16 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
           selectedId={selectedId}
           hoveredId={hoveredId}
           focus={focus}
+          openRoomId={openRoomId}
+          movingId={movingId}
           onHover={setHoveredId}
-          onSelect={setSelectedId}
+          onSelect={selectInScene}
           onFocusRoom={focusRoom}
           onAddRoom={setAdding}
+          onStartMove={setMovingId}
+          onMoveTo={moveTo}
+          onCancelMove={() => setMovingId(null)}
+          onRemoveRoom={remove}
         />
         <Roster
           snapshot={snapshot}
@@ -96,6 +145,14 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
           onFocusRoom={focusRoom}
         />
       </main>
+      {notice && (
+        <div
+          role="alert"
+          className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 border-2 border-[#1d1a2b] bg-red-400 px-3 py-2 font-mono text-xs text-[#1d1a2b] shadow-[3px_3px_0_0_rgba(0,0,0,0.4)]"
+        >
+          {notice}
+        </div>
+      )}
       {adding && anchorRoom && (
         <RepoPicker
           key={`${adding.roomId}:${adding.side}`}

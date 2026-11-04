@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useRef, type RefObject } from "react";
+import { useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { hash } from "@/lib/office/util";
-import { DOOR_H, NORTH_DOOR, ROOM_D, ROOM_W, SLAB, WALL_H, WALL_T, WEST_DOOR } from "@/lib/office/layout";
-import { Block, K, LeftWallPanel, mat, RightWallPanel, unitBox } from "./primitives";
+import { DOOR_H, EW_DOOR, NS_DOOR, ROOM_D, ROOM_W, SLAB, WALL_H, WALL_T } from "@/lib/office/layout";
+import { SIDES, type Side } from "@/lib/office/rooms";
+import { Block, K, LeftWallPanel, mat, RightWallPanel, StaticBatch, unitBox } from "./primitives";
 
 const W = ROOM_W;
 const D = ROOM_D;
@@ -17,21 +18,49 @@ const WINDOWS: [number, number][] = [
 ];
 const WINDOW_Z: [number, number] = [17, 45];
 
-export function Room() {
+/**
+ * One room. Closed rooms have four walls; an `open` room (the one in focus)
+ * lowers its walls, and everything hung on them, into the floor.
+ */
+export function Room({ open }: { open: boolean }) {
   return (
     <>
       <Floor />
       <Rugs />
-      <Walls />
-      {WINDOWS.map(([x0, x1]) => (
-        <Window key={x0} x0={x0} x1={x1} />
-      ))}
-      <Sunlight />
-      <Whiteboard />
-      <Picture />
-      <UpperCabinet />
-      <Clock />
+      <Footings />
+      <WallShell open={open}>
+        <Sunlight />
+        {SIDES.map((side) => (
+          <Wall key={side} side={side} />
+        ))}
+        {WINDOWS.map(([x0, x1]) => (
+          <Window key={x0} x0={x0} x1={x1} />
+        ))}
+        <Whiteboard />
+        <Picture />
+        <UpperCabinet />
+        <Clock />
+      </WallShell>
     </>
+  );
+}
+
+/** Scales its children (batched separately) from full height down to nothing as `open` flips. */
+function WallShell({ open, children }: { open: boolean; children: ReactNode }) {
+  const group = useRef<THREE.Group>(null);
+  const [initialScale] = useState<THREE.Vector3Tuple>(() => [1, open ? 0 : 1, 1]);
+  useFrame((_, dt) => {
+    const g = group.current;
+    if (!g) return;
+    const target = open ? 0 : 1;
+    const y = g.scale.y + (target - g.scale.y) * (1 - Math.exp(-dt * 8));
+    g.scale.y = Math.abs(y - target) < 0.002 ? target : y;
+    g.visible = g.scale.y > 0.01;
+  });
+  return (
+    <group ref={group} scale={initialScale} visible={!open}>
+      <StaticBatch>{children}</StaticBatch>
+    </group>
   );
 }
 
@@ -116,63 +145,101 @@ const around = (a: number, b: number, door: Span): [number, number][] => [
   [door.to, b],
 ];
 
-/** Panel-line positions every half tile, skipping the doorway. */
-const panelLines = (length: number, door: Span) =>
-  Array.from({ length: length * 2 - 1 }, (_, i) => (i + 1) * 0.5).filter((v) => v < door.from - 0.05 || v > door.to + 0.05);
-
+const STRUCTURE = "#8c7564";
 const TRIM = "#7d6553";
 const THRESHOLD = "#b98250";
+const DECOR = 0.015;
 
-function Walls() {
-  const n = NORTH_DOOR;
-  const w = WEST_DOOR;
+interface WallSpec {
+  /** Floor axis the wall runs along. */
+  along: "x" | "y";
+  /** Coordinate of the wall's inner face on the other axis. */
+  face: number;
+  /** +1 if the wall's thickness lies on the positive side of `face`. */
+  outward: 1 | -1;
+  /** Extent of the structure along the wall (corners included once). */
+  extent: [number, number];
+  /** Extent of the inside finish. */
+  inside: [number, number];
+  door: Span;
+  finish: { wall: string; wainscot: string; line: string; rail: string; base: string };
+}
+
+const NS_FINISH = { wall: "#f1e7d6", wainscot: "#9bb59e", line: "#8ca890", rail: "#6e8c74", base: "#5c7562" };
+const EW_FINISH = { wall: "#e3d6c0", wainscot: "#88a38c", line: "#7a957e", rail: "#5f7d66", base: "#4f6855" };
+
+// Corners: north takes NW, east takes NE, south takes SW and SE.
+const WALLS: Record<Side, WallSpec> = {
+  north: { along: "x", face: 0, outward: -1, extent: [-T, W], inside: [0, W], door: NS_DOOR, finish: NS_FINISH },
+  south: { along: "x", face: D, outward: 1, extent: [-T, W + T], inside: [0, W], door: NS_DOOR, finish: NS_FINISH },
+  west: { along: "y", face: 0, outward: -1, extent: [0, D], inside: [0, D], door: EW_DOOR, finish: EW_FINISH },
+  east: { along: "y", face: W, outward: 1, extent: [-T, D], inside: [0, D], door: EW_DOOR, finish: EW_FINISH },
+};
+
+/**
+ * A box against wall `spec`: [a, b] along it, z0..z0+h tall, and from
+ * `depth0` to `depth1` measured outward from the inner face (negative = into the room).
+ */
+function wallBox(spec: WallSpec, a: number, b: number, z0: number, h: number, depth0: number, depth1: number, color: string, cast = true) {
+  const p0 = spec.face + spec.outward * depth0;
+  const p1 = spec.face + spec.outward * depth1;
+  const lo = Math.min(p0, p1);
+  const thick = Math.abs(p1 - p0);
+  const k = `${a}-${z0}-${depth0}`;
+  return spec.along === "x" ? (
+    <Block key={k} x={a} y={lo} z={z0} w={b - a} d={thick} h={h} color={color} cast={cast} />
+  ) : (
+    <Block key={k} x={lo} y={a} z={z0} w={thick} d={b - a} h={h} color={color} cast={cast} />
+  );
+}
+
+/** One wall: structure split around its doorway, inside finish, and door trim. */
+function Wall({ side }: { side: Side }) {
+  const spec = WALLS[side];
+  const { door, finish } = spec;
+  const panel = (a: number, b: number, z0: number, z1: number, color: string, layer: number) =>
+    wallBox(spec, a, b, z0, z1 - z0, -DECOR * layer, 0, color, false);
+  const length = spec.inside[1] - spec.inside[0];
+  const lines = Array.from({ length: length * 2 - 1 }, (_, i) => spec.inside[0] + (i + 1) * 0.5).filter(
+    (v) => v < door.from - 0.05 || v > door.to + 0.05,
+  );
   return (
     <>
-      {/* Structural walls, split around the doorways; tops and cut ends read as the darker trim. */}
-      {around(-T, W, n).map(([a, b]) => (
-        <Block key={`n${a}`} x={a} y={-T} z={-SLAB} w={b - a} d={T} h={H + SLAB} color="#8c7564" />
-      ))}
-      <Block x={n.from} y={-T} z={DOOR_H} w={n.to - n.from} d={T} h={H - DOOR_H} color="#8c7564" />
-      <Block x={n.from} y={-T} z={-SLAB} w={n.to - n.from} d={T} h={SLAB} color={THRESHOLD} />
-      {around(0, D, w).map(([a, b]) => (
-        <Block key={`w${a}`} x={-T} y={a} z={-SLAB} w={T} d={b - a} h={H + SLAB} color="#a08a78" />
-      ))}
-      <Block x={-T} y={w.from} z={DOOR_H} w={T} d={w.to - w.from} h={H - DOOR_H} color="#a08a78" />
-      <Block x={-T} y={w.from} z={-SLAB} w={T} d={w.to - w.from} h={SLAB} color={THRESHOLD} />
-
-      {/* North wall finish */}
-      {around(0, W, n).map(([a, b]) => (
-        <group key={`nf${a}`}>
-          <RightWallPanel x0={a} x1={b} z0={0} z1={H} color="#f1e7d6" layer={0.5} />
-          <RightWallPanel x0={a} x1={b} z0={0} z1={20} color="#9bb59e" />
-          <RightWallPanel x0={a} x1={b} z0={20} z1={22} color="#6e8c74" layer={2} />
-          <RightWallPanel x0={a} x1={b} z0={0} z1={3} color="#5c7562" layer={2} />
+      {around(spec.extent[0], spec.extent[1], door).map(([a, b]) => wallBox(spec, a, b, 0, H, 0, T, STRUCTURE))}
+      {wallBox(spec, door.from, door.to, DOOR_H, H - DOOR_H, 0, T, STRUCTURE)}
+      {around(spec.inside[0], spec.inside[1], door).map(([a, b]) => (
+        <group key={a}>
+          {panel(a, b, 0, H, finish.wall, 0.5)}
+          {panel(a, b, 0, 20, finish.wainscot, 1)}
+          {panel(a, b, 20, 22, finish.rail, 2)}
+          {panel(a, b, 0, 3, finish.base, 2)}
         </group>
       ))}
-      <RightWallPanel x0={n.from} x1={n.to} z0={DOOR_H} z1={H} color="#f1e7d6" layer={0.5} />
-      {panelLines(W, n).map((x) => (
-        <RightWallPanel key={x} x0={x - 0.015} x1={x + 0.015} z0={4} z1={19} color="#8ca890" layer={1.5} />
-      ))}
-      <RightWallPanel x0={n.from - 0.06} x1={n.from} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
-      <RightWallPanel x0={n.to} x1={n.to + 0.06} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
-      <RightWallPanel x0={n.from - 0.06} x1={n.to + 0.06} z0={DOOR_H} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
+      {panel(door.from, door.to, DOOR_H, H, finish.wall, 0.5)}
+      {lines.map((v) => panel(v - 0.015, v + 0.015, 4, 19, finish.line, 1.5))}
+      {panel(door.from - 0.06, door.from, 0, DOOR_H + 1.5, TRIM, 2.5)}
+      {panel(door.to, door.to + 0.06, 0, DOOR_H + 1.5, TRIM, 2.5)}
+      {panel(door.from - 0.06, door.to + 0.06, DOOR_H, DOOR_H + 1.5, TRIM, 2.5)}
+    </>
+  );
+}
 
-      {/* West wall finish */}
-      {around(0, D, w).map(([a, b]) => (
-        <group key={`wf${a}`}>
-          <LeftWallPanel y0={a} y1={b} z0={0} z1={H} color="#e3d6c0" layer={0.5} />
-          <LeftWallPanel y0={a} y1={b} z0={0} z1={20} color="#88a38c" />
-          <LeftWallPanel y0={a} y1={b} z0={20} z1={22} color="#5f7d66" layer={2} />
-          <LeftWallPanel y0={a} y1={b} z0={0} z1={3} color="#4f6855" layer={2} />
-        </group>
-      ))}
-      <LeftWallPanel y0={w.from} y1={w.to} z0={DOOR_H} z1={H} color="#e3d6c0" layer={0.5} />
-      {panelLines(D, w).map((y) => (
-        <LeftWallPanel key={y} y0={y - 0.015} y1={y + 0.015} z0={4} z1={19} color="#7a957e" layer={1.5} />
-      ))}
-      <LeftWallPanel y0={w.from - 0.06} y1={w.from} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
-      <LeftWallPanel y0={w.to} y1={w.to + 0.06} z0={0} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
-      <LeftWallPanel y0={w.from - 0.06} y1={w.to + 0.06} z0={DOOR_H} z1={DOOR_H + 1.5} color={TRIM} layer={2.5} />
+/**
+ * The part of every wall below floor level, plus the doorway thresholds. It
+ * stays when the walls are lowered, so the floor keeps its rim and bridges stay joined.
+ */
+function Footings() {
+  return (
+    <>
+      {SIDES.map((side) => {
+        const spec = WALLS[side];
+        return (
+          <group key={side}>
+            {around(spec.extent[0], spec.extent[1], spec.door).map(([a, b]) => wallBox(spec, a, b, -SLAB, SLAB, 0, T, STRUCTURE))}
+            {wallBox(spec, spec.door.from, spec.door.to, -SLAB, SLAB, 0, T, THRESHOLD)}
+          </group>
+        );
+      })}
     </>
   );
 }

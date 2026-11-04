@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { bridges, canPlaceRoom, openSides, roomIdForPath, type RoomRecord } from "./rooms";
+import {
+  bridges,
+  canPlaceRoom,
+  canRemoveRoom,
+  MAIN_ROOM_ID,
+  moveTargets,
+  openSides,
+  roomIdForPath,
+  type RoomRecord,
+} from "./rooms";
 
 const room = (id: string, x: number, z: number): RoomRecord => ({
   id,
@@ -53,5 +62,41 @@ describe("room grid", () => {
     expect(id).toMatch(/^my-app-[a-z0-9]+$/);
     // Same folder name in two places must not collide.
     expect(roomIdForPath("/Users/me/work/api")).not.toBe(roomIdForPath("/Users/me/personal/api"));
+  });
+
+  it("lets any room but the main one be removed", () => {
+    const rooms = [room(MAIN_ROOM_ID, 0, 0), room("api", 1, 0)];
+    expect(canRemoveRoom(rooms, "api")).toBe(true);
+    expect(canRemoveRoom(rooms, MAIN_ROOM_ID)).toBe(false);
+  });
+
+  it("won't remove a room that is the only way back to the main room for others", () => {
+    // main — api — web in a row: web hangs off api.
+    const rooms = [room(MAIN_ROOM_ID, 0, 0), room("api", 1, 0), room("web", 2, 0)];
+    expect(canRemoveRoom(rooms, "api")).toBe(false);
+    expect(canRemoveRoom(rooms, "web")).toBe(true);
+  });
+
+  it("offers every free spot next to another room as a move target, but never moves the main room", () => {
+    const rooms = [room(MAIN_ROOM_ID, 0, 0), room("api", 1, 0)];
+    expect(moveTargets(rooms, "api")).toEqual([
+      { x: 0, z: -1 },
+      { x: 0, z: 1 },
+      { x: -1, z: 0 },
+    ]);
+    expect(moveTargets(rooms, MAIN_ROOM_ID)).toEqual([]);
+  });
+
+  it("only offers moves that leave every room still connected to the main room", () => {
+    // main — api — web in a row.
+    const rooms = [room(MAIN_ROOM_ID, 0, 0), room("api", 1, 0), room("web", 2, 0)];
+    expect(moveTargets(rooms, "api")).toEqual([]); // web would be stranded wherever api goes
+    expect(moveTargets(rooms, "web")).toEqual([
+      { x: 0, z: -1 },
+      { x: 0, z: 1 },
+      { x: -1, z: 0 },
+      { x: 1, z: -1 },
+      { x: 1, z: 1 },
+    ]);
   });
 });

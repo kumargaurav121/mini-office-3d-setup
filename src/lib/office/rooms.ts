@@ -1,8 +1,7 @@
 import { hashString } from "./util";
 
-// The office is a grid of rooms, one per local repo, joined by bridges.
-// Cells are grid coordinates: east is +x, south is +z (the camera looks
-// from the south-east, so north and west are the walled sides of a room).
+// The office is a grid of rooms, one per local folder, joined by bridges.
+// Cells are grid coordinates: east is +x, south is +z.
 
 export type Side = "north" | "east" | "south" | "west";
 
@@ -90,4 +89,48 @@ export function roomIdForPath(path: string): string {
   const name = path.split("/").filter(Boolean).pop() ?? "room";
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "room";
   return `${slug}-${hashString(path).toString(36)}`;
+}
+
+/** True if every room can reach the main room over bridges. */
+function allConnected(rooms: RoomRecord[]): boolean {
+  const byCell = new Map(rooms.map((r) => [key(r.cell), r]));
+  const start = rooms.find((r) => r.id === MAIN_ROOM_ID);
+  if (!start) return false;
+  const seen = new Set([start.id]);
+  const stack = [start];
+  while (stack.length) {
+    const room = stack.pop()!;
+    for (const side of SIDES) {
+      const next = byCell.get(key(neighborCell(room.cell, side)));
+      if (next && !seen.has(next.id)) {
+        seen.add(next.id);
+        stack.push(next);
+      }
+    }
+  }
+  return seen.size === rooms.length;
+}
+
+/** Any room but the main one can go, as long as nobody is left without a way back to main. */
+export function canRemoveRoom(rooms: RoomRecord[], id: string): boolean {
+  if (id === MAIN_ROOM_ID || !rooms.some((r) => r.id === id)) return false;
+  return allConnected(rooms.filter((r) => r.id !== id));
+}
+
+/**
+ * Free cells room `id` could move to: next to another room (never its own
+ * cell), keeping every room connected to main. The main room stays put.
+ */
+export function moveTargets(rooms: RoomRecord[], id: string): Cell[] {
+  const moving = rooms.find((r) => r.id === id);
+  if (!moving || id === MAIN_ROOM_ID) return [];
+  const others = rooms.filter((r) => r.id !== id);
+  const seen = new Set([key(moving.cell)]);
+  const out: Cell[] = [];
+  for (const { cell } of openSides(others)) {
+    if (seen.has(key(cell))) continue;
+    seen.add(key(cell));
+    if (allConnected([...others, { ...moving, cell }])) out.push(cell);
+  }
+  return out;
 }

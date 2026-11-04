@@ -54,4 +54,24 @@ describe("office world", () => {
     for (let t = 0; t < 60; t += 0.1) world.update(0.1);
     expect(world.getSnapshot().statuses.every((s) => s.activity === "working")).toBe(true);
   });
+
+  it("drops removed rooms and moves rooms on sync, without resetting the people in them", () => {
+    const web: RoomRecord = { id: "web-1", name: "web", path: "/Users/me/Repo/web", cell: { x: 0, z: 1 } };
+    const world = new OfficeWorld([main, api, web]);
+    for (let t = 0; t < 30; t += 0.1) world.update(0.1);
+    const apiSim = world.rooms[1].sim;
+    const listener = vi.fn();
+    world.subscribe(listener);
+
+    world.syncRooms([main, { ...api, cell: { x: -1, z: 0 } }]);
+    const snap = world.getSnapshot();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(snap.rooms.map((r) => [r.id, r.cell])).toEqual([
+      [MAIN_ROOM_ID, { x: 0, z: 0 }],
+      ["api-1", { x: -1, z: 0 }],
+    ]);
+    expect(world.rooms[1].sim).toBe(apiSim);
+    expect(snap.statuses.some((s) => s.id.startsWith("web-1/"))).toBe(false);
+    expect(snap.crews["web-1"]).toBeUndefined();
+  });
 });

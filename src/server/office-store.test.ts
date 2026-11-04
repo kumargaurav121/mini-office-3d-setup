@@ -106,6 +106,48 @@ describe("room store", () => {
       await rm(elsewhere, { recursive: true, force: true });
     }
   });
+
+  it("removes a room and forgets it after a restart", async () => {
+    const tempo = await repo("work", "tempo");
+    const api = await repo("work", "api");
+    const [, added] = await storeFor(tempo).addRoom(api, { x: 1, z: 0 });
+    expect((await storeFor(tempo).removeRoom(added.id)).map((r) => r.name)).toEqual(["tempo"]);
+    expect((await storeFor(tempo).rooms()).map((r) => r.name)).toEqual(["tempo"]);
+  });
+
+  it("refuses to remove the main room, a room others depend on, or one that doesn't exist", async () => {
+    const tempo = await repo("work", "tempo");
+    const store = storeFor(tempo);
+    const [, api] = await store.addRoom(await repo("work", "api"), { x: 1, z: 0 });
+    await store.addRoom(await repo("work", "web"), { x: 2, z: 0 });
+    await expect(store.removeRoom(MAIN_ROOM_ID)).rejects.toThrow(/can't remove/i);
+    await expect(store.removeRoom(api.id)).rejects.toThrow(/can't remove/i);
+    await expect(store.removeRoom("nope")).rejects.toThrow(/can't remove/i);
+    expect(await store.rooms()).toHaveLength(3);
+  });
+
+  it("moves a room to another free spot and remembers it after a restart", async () => {
+    const tempo = await repo("work", "tempo");
+    const [, api] = await storeFor(tempo).addRoom(await repo("work", "api"), { x: 1, z: 0 });
+    const moved = await storeFor(tempo).moveRoom(api.id, { x: 0, z: 1 });
+    expect(moved.find((r) => r.id === api.id)?.cell).toEqual({ x: 0, z: 1 });
+    expect((await storeFor(tempo).rooms()).find((r) => r.id === api.id)?.cell).toEqual({ x: 0, z: 1 });
+  });
+
+  it("refuses moves that strand a room, land on a taken spot, or move the main room", async () => {
+    const tempo = await repo("work", "tempo");
+    const store = storeFor(tempo);
+    const [, api] = await store.addRoom(await repo("work", "api"), { x: 1, z: 0 });
+    const [, , web] = await store.addRoom(await repo("work", "web"), { x: 2, z: 0 });
+    await expect(store.moveRoom(api.id, { x: 0, z: 1 })).rejects.toThrow(/spot/i); // web would be stranded
+    await expect(store.moveRoom(web.id, { x: 1, z: 0 })).rejects.toThrow(/spot/i); // taken
+    await expect(store.moveRoom(MAIN_ROOM_ID, { x: 0, z: 1 })).rejects.toThrow(/spot/i);
+    expect((await store.rooms()).map((r) => r.cell)).toEqual([
+      { x: 0, z: 0 },
+      { x: 1, z: 0 },
+      { x: 2, z: 0 },
+    ]);
+  });
 });
 
 describe("finding repos", () => {

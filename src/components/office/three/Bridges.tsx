@@ -1,21 +1,21 @@
 "use client";
 
-import { NORTH_DOOR, ROOM_D, ROOM_GAP, ROOM_W, SLAB, WALL_H, WALL_T, WEST_DOOR } from "@/lib/office/layout";
+import { EW_DOOR, NS_DOOR, ROOM_D, ROOM_GAP, ROOM_W, SLAB, WALL_T } from "@/lib/office/layout";
 import type { Side } from "@/lib/office/rooms";
-import { Block, K } from "./primitives";
+import { Block } from "./primitives";
 
 const WIDTH = 1.1;
 /** Length of the stub on an open side, where the + button sits. */
 export const STUB = 1.6;
-/** A full bridge spans the gap up to the next room's outer wall. */
-export const BRIDGE = ROOM_GAP - WALL_T;
+/** A full bridge spans the gap between the two rooms' outer walls. */
+export const BRIDGE = ROOM_GAP - 2 * WALL_T;
 const DECK = "#b98250";
 const SEAM = "#8a5a36";
 const RAIL = "#5c5f73";
 const POST = "#4a4d5e";
 // Bridges line up with the doorways, so neighbours' bridges meet head-on.
-const NS_AXIS = (NORTH_DOOR.from + NORTH_DOOR.to) / 2;
-const EW_AXIS = (WEST_DOOR.from + WEST_DOOR.to) / 2;
+const NS_AXIS = (NS_DOOR.from + NS_DOOR.to) / 2;
+const EW_AXIS = (EW_DOOR.from + EW_DOOR.to) / 2;
 
 interface Span {
   /** Which floor axis the walkway runs along. */
@@ -26,27 +26,24 @@ interface Span {
   center: number;
 }
 
-/** Where a walkway of `length` leaving through `side` lies, in room-local tiles. */
-function span(side: Side, length: number): Span {
+/** Where a walkway of `length` leaving through `side` lies (from the wall outward), in room-local tiles. */
+function span(side: Side, length: number): Span & { end: number } {
   switch (side) {
     case "east":
-      return { along: "x", from: ROOM_W, to: ROOM_W + length, center: EW_AXIS };
+      return { along: "x", from: ROOM_W + WALL_T, to: ROOM_W + WALL_T + length, center: EW_AXIS, end: ROOM_W + WALL_T + length };
     case "west":
-      return { along: "x", from: -WALL_T - length, to: -WALL_T, center: EW_AXIS };
+      return { along: "x", from: -WALL_T - length, to: -WALL_T, center: EW_AXIS, end: -WALL_T - length };
     case "south":
-      return { along: "y", from: ROOM_D, to: ROOM_D + length, center: NS_AXIS };
+      return { along: "y", from: ROOM_D + WALL_T, to: ROOM_D + WALL_T + length, center: NS_AXIS, end: ROOM_D + WALL_T + length };
     case "north":
-      return { along: "y", from: -WALL_T - length, to: -WALL_T, center: NS_AXIS };
+      return { along: "y", from: -WALL_T - length, to: -WALL_T, center: NS_AXIS, end: -WALL_T - length };
   }
 }
 
-/** Point above the end of a stub for the + button: [x, height, z] in room-local world units. */
+/** Point above the far end of a stub, for its + button: [x, height, z] in room-local world units. */
 export function stubAnchor(side: Side): [number, number, number] {
   const s = span(side, STUB);
-  // On the walled sides the stub hides behind the wall, so float the button above it.
-  const height = side === "north" || side === "west" ? WALL_H * K + 0.45 : 0.75;
-  const end = side === "north" || side === "west" ? s.from : s.to;
-  return s.along === "x" ? [end, height, s.center] : [s.center, height, end];
+  return s.along === "x" ? [s.end, 0.8, s.center] : [s.center, 0.8, s.end];
 }
 
 /** A wooden walkway with railings leaving the room through `side`. */

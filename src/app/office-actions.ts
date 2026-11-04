@@ -27,6 +27,14 @@ export async function addRoom(path: string, cell: Cell): Promise<ActionResult<Ro
   return attempt(async () => (await getStore()).addRoom(expandHome(path), cell));
 }
 
+export async function removeRoom(id: string): Promise<ActionResult<RoomRecord[]>> {
+  return attempt(async () => (await getStore()).removeRoom(id));
+}
+
+export async function moveRoom(id: string, cell: Cell): Promise<ActionResult<RoomRecord[]>> {
+  return attempt(async () => (await getStore()).moveRoom(id, cell));
+}
+
 /** Failures come back as a message for the UI; unexpected ones (permissions, IO) are logged too. */
 async function attempt<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {

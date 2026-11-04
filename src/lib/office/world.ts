@@ -48,8 +48,22 @@ export class OfficeWorld {
     for (const room of this.list) room.sim.setCalm(calm);
   }
 
-  /** Add any rooms we don't have yet; existing rooms keep running untouched. */
+  /**
+   * Match the server's room list: add new rooms, drop removed ones, and move
+   * rooms whose cell changed. Rooms that stay keep their simulation running.
+   */
   syncRooms(records: RoomRecord[]) {
+    const wanted = new Map(records.map((r) => [r.id, r]));
+    const kept = this.list.filter((room) => wanted.has(room.record.id));
+    if (kept.length !== this.list.length) this.dirty = true;
+    this.list = kept;
+    for (const room of this.list) {
+      const next = wanted.get(room.record.id)!;
+      if (next.cell.x !== room.record.cell.x || next.cell.z !== room.record.cell.z) {
+        room.record = next;
+        this.dirty = true;
+      }
+    }
     const known = new Set(this.list.map((r) => r.record.id));
     for (const record of records) {
       if (known.has(record.id)) continue;

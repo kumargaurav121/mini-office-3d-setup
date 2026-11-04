@@ -1,6 +1,14 @@
 import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { canPlaceRoom, MAIN_ROOM_ID, roomIdForPath, type Cell, type RoomRecord } from "@/lib/office/rooms";
+import {
+  canPlaceRoom,
+  canRemoveRoom,
+  MAIN_ROOM_ID,
+  moveTargets,
+  roomIdForPath,
+  type Cell,
+  type RoomRecord,
+} from "@/lib/office/rooms";
 
 export interface OfficeConfig {
   /** Absolute path of the repo shown in the middle room. */
@@ -62,6 +70,31 @@ export class RoomStore {
     saved.rooms.push({ id: roomIdForPath(path), name: basename(path), path, cell });
     await this.save(saved);
     return this.rooms();
+  }
+
+  /** Remove a room from the office (the folder on disk is untouched). */
+  async removeRoom(id: string): Promise<RoomRecord[]> {
+    return withLock(this.statePath, async () => {
+      if (!canRemoveRoom(await this.rooms(), id)) {
+        throw new RoomError("Can't remove that room: it's the main room, or other rooms connect through it.");
+      }
+      const saved = await this.load();
+      saved.rooms = saved.rooms.filter((r) => r.id !== id);
+      await this.save(saved);
+      return this.rooms();
+    });
+  }
+
+  /** Move a room to another cell. */
+  async moveRoom(id: string, cell: Cell): Promise<RoomRecord[]> {
+    return withLock(this.statePath, async () => {
+      const target = moveTargets(await this.rooms(), id).find((c) => c.x === cell?.x && c.z === cell?.z);
+      if (!target) throw new RoomError("That room can't move to that spot.");
+      const saved = await this.load();
+      saved.rooms = saved.rooms.map((r) => (r.id === id ? { ...r, cell: target } : r));
+      await this.save(saved);
+      return this.rooms();
+    });
   }
 
   private async load(): Promise<SavedState> {
