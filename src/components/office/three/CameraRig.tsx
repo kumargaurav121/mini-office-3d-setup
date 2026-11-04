@@ -4,7 +4,7 @@ import { useLayoutEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
-import { ROOM_D, ROOM_W, roomOrigin, SLAB, WALL_H, WALL_T } from "@/lib/office/layout";
+import { DESKS, monitorScreen, ROOM_D, ROOM_W, roomOrigin, SLAB, WALL_H, WALL_T } from "@/lib/office/layout";
 import type { RoomRecord } from "@/lib/office/rooms";
 import { STUB } from "./Bridges";
 import { K } from "./primitives";
@@ -19,11 +19,24 @@ export const VIEW_DIR = new THREE.Vector3(
   Math.cos(AZIMUTH) * Math.cos(ELEVATION),
 );
 
-/** What the camera should frame: a room, or the whole office when `roomId` is null. */
+/** What the camera should frame: a room, the whole office (`roomId` null), or one desk's monitor. */
 export interface Focus {
   roomId: string | null;
-  /** Bumped on every request, so asking for the same room twice still glides. */
+  /** Set to watch the monitor on this desk of `roomId`, head-on and close up. */
+  deskIndex?: number;
+  /** Bumped on every request, so asking for the same thing twice still glides. */
   request: number;
+}
+
+/** Looking at a monitor: straight at its screen, tilted down enough to see over the agent's head. */
+function monitorFraming(room: RoomRecord, deskIndex: number, width: number, height: number): Framing {
+  const s = monitorScreen(DESKS[deskIndex]);
+  const o = roomOrigin(room.cell);
+  const c = new THREE.Vector3(o.x + s.x, s.z * K, o.y + s.y);
+  const half = new THREE.Vector3(s.width / 2, (s.height * K) / 2, 0.01);
+  const tilt = deg(26);
+  const dir = new THREE.Vector3(0, Math.sin(tilt), s.facing * Math.cos(tilt));
+  return frame({ min: c.clone().sub(half), max: c.clone().add(half) }, dir, width, height, 0.8);
 }
 
 export interface Box {
@@ -107,7 +120,8 @@ export function CameraRig({ rooms, focus }: { rooms: RoomRecord[]; focus: Focus 
     if (!controls || width === 0 || height === 0) return;
     const all = frame(officeBox(rooms), VIEW_DIR, width, height);
     const one = frame(roomBox(rooms[0]), VIEW_DIR, width, height);
-    setZoomLimits(controls, Math.min(all.zoom, one.zoom) * 0.6, one.zoom * 3);
+    // Deep zoom is allowed so a monitor's terminal can fill the view.
+    setZoomLimits(controls, Math.min(all.zoom, one.zoom) * 0.6, one.zoom * 30);
     if (!placed.current && camera instanceof THREE.OrthographicCamera) {
       placed.current = true;
       applyFraming(camera, controls, all);
@@ -123,6 +137,10 @@ export function CameraRig({ rooms, focus }: { rooms: RoomRecord[]; focus: Focus 
     const { rooms: list, width: w, height: h } = latest.current;
     if (!controls || w === 0 || focus.request === 0) return;
     const room = list.find((r) => r.id === focus.roomId);
+    if (room && focus.deskIndex !== undefined) {
+      goal.current = monitorFraming(room, focus.deskIndex, w, h);
+      return;
+    }
     const dir = camera.position.clone().sub(controls.target).normalize();
     goal.current = frame(room ? roomBox(room) : officeBox(list), dir, w, h, room ? 0.85 : 0.92);
   }, [camera, controls, focus]);

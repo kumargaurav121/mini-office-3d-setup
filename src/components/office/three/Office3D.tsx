@@ -4,7 +4,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefOb
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { ROOM_D, ROOM_W, roomOrigin, WALL_H, WALL_T, type IconName } from "@/lib/office/layout";
+import { DESKS, monitorScreen, PORTAL, ROOM_D, ROOM_W, roomOrigin, WALL_H, WALL_T, type IconName } from "@/lib/office/layout";
 import {
   bridges,
   canRemoveRoom,
@@ -19,11 +19,16 @@ import {
 } from "@/lib/office/rooms";
 import { isSeated, type OfficeSim } from "@/lib/office/sim";
 import type { OfficeWorld, WorldSnapshot } from "@/lib/office/world";
+import type { AgentInfo } from "@/server/agents/registry";
+import { agentLabel } from "../agent-label";
+import { AgentTerminal } from "../AgentTerminal";
 import { PixelIcon } from "../PixelIcon";
 import { BRIDGE, STUB, stubAnchor, Walkway } from "./Bridges";
 import { CameraRig, officeBox, VIEW_DIR, type Focus } from "./CameraRig";
 import { Character, SEAT_LIFT } from "./Character";
 import { Furniture } from "./Furniture";
+import { Portal } from "./Portal";
+import { TerminalScreen } from "./TerminalScreen";
 import { K, StaticBatch } from "./primitives";
 import { Room } from "./Room";
 
@@ -49,6 +54,14 @@ interface Props {
   onMoveTo: (cell: Cell) => void;
   onCancelMove: () => void;
   onRemoveRoom: (roomId: string) => void;
+  /** Live Claude Code agents, from the server. */
+  agents: AgentInfo[];
+  /** Agent being watched: no arrow, ring or tag on it, so they don't cover its screen. */
+  watchingId: string | null;
+  onSpawn: (roomId: string) => void;
+  onAnswer: (agentId: string, askId: string, yes: boolean) => void;
+  onWatch: (agentId: string) => void;
+  onEndAgent: (agentId: string) => void;
 }
 
 export default function Office3D(props: Props) {
@@ -60,7 +73,11 @@ export default function Office3D(props: Props) {
   const links = useMemo(() => bridges(snapshot.rooms), [snapshot.rooms]);
   const targets = useMemo(() => (movingId ? moveTargets(snapshot.rooms, movingId) : []), [snapshot.rooms, movingId]);
   const moving = snapshot.rooms.find((r) => r.id === movingId);
-  const label = (id: string) => snapshot.statuses.find((s) => s.id === id)?.label;
+  const [portalHover, setPortalHover] = useState(false);
+  const infoOf = (id: string) => props.agents.find((a) => a.id === id);
+  const label = (id: string) => agentLabel(infoOf(id), snapshot.statuses.find((s) => s.id === id));
+  const roomFull = (roomId: string) => props.agents.filter((a) => a.roomId === roomId).length >= DESKS.length;
+  const watched = props.agents.filter((a) => a.roomId === openRoomId);
   const nameOf = (roomId: string) => snapshot.rooms.find((r) => r.id === roomId)?.name ?? "";
   const track = (key: string) => (el: HTMLElement | null) => {
     if (el) overlays.current.set(key, el);
@@ -72,7 +89,7 @@ export default function Office3D(props: Props) {
       className="stage relative aspect-[4/3] w-full overflow-hidden lg:aspect-auto lg:min-h-0 lg:flex-1"
       role="img"
       aria-label={`3D office with ${snapshot.rooms.length} rooms`}
-      style={{ cursor: hoveredId ? "pointer" : "grab" }}
+      style={{ cursor: hoveredId || portalHover ? "pointer" : "grab" }}
       onPointerDown={(e) => {
         down.current = { x: e.clientX, y: e.clientY };
       }}
@@ -98,12 +115,15 @@ export default function Office3D(props: Props) {
               bridgeSides={sideKey(links.filter((b) => b.from === room.record.id).map((b) => b.side))}
               stubSides={sideKey(freeSides.filter((s) => s.roomId === room.record.id).map((s) => s.side))}
             />
+            <Portal full={roomFull(room.record.id)} onOpen={() => props.onSpawn(room.record.id)} onHover={setPortalHover} />
+            {room.record.id === openRoomId &&
+              watched.map((a) => <TerminalScreen key={a.id} agentId={a.id} desk={DESKS[a.deskIndex]} />)}
             {room.sim.agents.map((a) => (
               <Character
                 key={a.emp.id}
                 agent={a}
-                hovered={a.emp.id === hoveredId}
-                selected={a.emp.id === selectedId}
+                hovered={a.emp.id === hoveredId && a.emp.id !== props.watchingId}
+                selected={a.emp.id === selectedId && a.emp.id !== props.watchingId}
                 onHover={props.onHover}
                 onSelect={props.onSelect}
               />
@@ -125,6 +145,7 @@ export default function Office3D(props: Props) {
         <CameraRig rooms={snapshot.rooms} focus={focus} />
         <OverlayTracker
           world={world}
+          agents={watched}
           openRoomId={openRoomId}
           freeSides={freeSides}
           targets={targets}
@@ -153,6 +174,35 @@ export default function Office3D(props: Props) {
                 />
               )}
             </div>
+          </div>
+        ))}
+        {snapshot.rooms
+          .filter((r) => r.id === openRoomId)
+          .map((r) => (
+            <div key={`portal:${r.id}`} ref={track(`portal:${r.id}`)} className="invisible absolute top-0 left-0 will-change-transform">
+              <button
+                type="button"
+                disabled={roomFull(r.id)}
+                onClick={() => props.onSpawn(r.id)}
+                className="pointer-events-auto -translate-x-1/2 -translate-y-full border-2 border-[#1d1a2b] bg-[#5ee7ff] px-2 py-1 font-pixel text-sm whitespace-nowrap text-[#1d1a2b] shadow-[3px_3px_0_0_rgba(0,0,0,0.35)] hover:brightness-110 disabled:bg-panel disabled:text-muted"
+              >
+                {roomFull(r.id) ? "Desks full" : "+ Spawn agent"}
+              </button>
+            </div>
+          ))}
+        {/*
+          Input terminals: invisible, laid exactly over the open room's monitors by
+          OverlayTracker, so clicks, typing and scrolling reach them. What you see is
+          the TerminalScreen texture in the 3D scene, which objects in front can hide.
+        */}
+        {watched.map((a) => (
+          <div
+            key={`term:${a.id}`}
+            ref={track(`term:${a.id}`)}
+            className="pointer-events-auto invisible absolute top-0 left-0 origin-top-left opacity-0"
+            aria-label={`${a.name}'s terminal`}
+          >
+            <AgentTerminal agentId={a.id} />
           </div>
         ))}
         {freeSides.map((s) => (
@@ -190,22 +240,57 @@ export default function Office3D(props: Props) {
         {snapshot.rooms.flatMap((r) =>
           (snapshot.crews[r.id] ?? []).map((emp) => {
             const icon = bubbles[emp.id];
-            const tagged = emp.id === hoveredId || emp.id === selectedId;
+            const selected = emp.id === selectedId;
+            const tagged = (emp.id === hoveredId || selected) && emp.id !== props.watchingId;
+            const info = infoOf(emp.id);
+            const ask = info?.session.ask;
             return (
               <div
                 key={emp.id}
                 ref={track(`agent:${emp.id}`)}
                 className="invisible absolute top-0 left-0 will-change-transform"
-                aria-hidden
               >
                 <div className="flex -translate-x-1/2 -translate-y-full flex-col items-center gap-1">
-                  {tagged && (
-                    <div className="border-2 border-[#1d1a2b] bg-ink px-2 py-1 text-center whitespace-nowrap text-[#1d1a2b] shadow-[3px_3px_0_0_rgba(0,0,0,0.35)]">
-                      <div className="font-pixel text-sm leading-none">{emp.name}</div>
-                      <div className="mt-1 font-mono text-[10px] leading-none text-[#4b4766]">{label(emp.id)}</div>
+                  {ask && (
+                    <div className="pointer-events-auto relative max-w-72 border-2 border-[#1d1a2b] bg-white px-2.5 py-2 text-[#1d1a2b] shadow-[3px_3px_0_0_rgba(0,0,0,0.35)]">
+                      <div className="font-pixel text-sm leading-tight">{ask.title}</div>
+                      {ask.detail && <div className="mt-1 font-mono text-[10px] leading-snug text-[#4b4766]">{ask.detail}</div>}
+                      <div className="mt-2 flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => props.onAnswer(emp.id, ask.id, true)}
+                          className="border-2 border-[#1d1a2b] bg-emerald-300 px-2 py-0.5 font-mono text-[11px] hover:bg-emerald-200"
+                        >
+                          {ask.kind === "trust" ? "Trust" : "Allow"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => props.onAnswer(emp.id, ask.id, false)}
+                          className="border-2 border-[#1d1a2b] bg-red-300 px-2 py-0.5 font-mono text-[11px] hover:bg-red-200"
+                        >
+                          {ask.kind === "trust" ? "Exit" : "Deny"}
+                        </button>
+                      </div>
+                      <div className="absolute -bottom-[7px] left-1/2 size-3 -translate-x-1/2 rotate-45 border-r-2 border-b-2 border-[#1d1a2b] bg-white" />
                     </div>
                   )}
-                  {icon && (
+                  {tagged && !ask && (
+                    <div className="border-2 border-[#1d1a2b] bg-ink px-2 py-1 text-center whitespace-nowrap text-[#1d1a2b] shadow-[3px_3px_0_0_rgba(0,0,0,0.35)]">
+                      <div className="font-pixel text-sm leading-none">{emp.name}</div>
+                      <div className="mt-1 max-w-64 truncate font-mono text-[10px] leading-none text-[#4b4766]">{label(emp.id)}</div>
+                      {selected && info && info.session.phase !== "ended" && (
+                        <div className="pointer-events-auto mt-1.5 flex justify-center gap-1">
+                          <button type="button" onClick={() => props.onWatch(emp.id)} className="border-2 border-[#1d1a2b] bg-accent px-1.5 font-mono text-[10px]">
+                            Watch
+                          </button>
+                          <button type="button" onClick={() => props.onEndAgent(emp.id)} className="border-2 border-[#1d1a2b] bg-red-300 px-1.5 font-mono text-[10px]">
+                            End
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {icon && !ask && (
                     <div className="relative border-2 border-[#1d1a2b] bg-white p-1">
                       <PixelIcon name={icon} size={21} />
                       <div className="absolute -bottom-[7px] left-1/2 size-3 -translate-x-1/2 rotate-45 border-r-2 border-b-2 border-[#1d1a2b] bg-white" />
@@ -256,7 +341,8 @@ function RoomActions(p: { canMove: boolean; canRemove: boolean; onMove: () => vo
   const [confirming, setConfirming] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setConfirming(false);
+      const inTerminal = e.target instanceof Element && e.target.closest(".xterm") !== null;
+      if (e.key === "Escape" && !inTerminal) setConfirming(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -395,10 +481,12 @@ function Lights({ rooms }: { rooms: RoomRecord[] }) {
 }
 
 const point = new THREE.Vector3();
+const look = new THREE.Vector3();
 
 /** Projects plates, + buttons, move targets and tags to screen space each frame; reports bubble changes. */
 function OverlayTracker({
   world,
+  agents,
   openRoomId,
   freeSides,
   targets,
@@ -406,6 +494,8 @@ function OverlayTracker({
   onBubbles,
 }: {
   world: OfficeWorld;
+  /** Agents in the open room, whose terminals sit on their monitors. */
+  agents: AgentInfo[];
   openRoomId: string;
   freeSides: OpenSide[];
   targets: Cell[];
@@ -421,6 +511,36 @@ function OverlayTracker({
     // The controls moved the camera earlier this frame, but its matrices only refresh at
     // render time; update them now so overlays don't trail a frame behind (seen as jitter).
     camera.updateMatrixWorld();
+    const toScreen = (x: number, y: number, z: number) => {
+      point.set(x, y, z).project(camera);
+      return { x: ((point.x + 1) / 2) * width, y: ((1 - point.y) / 2) * height };
+    };
+    // Stretch a terminal over its desk's monitor. The camera is orthographic, so the
+    // screen's outline is a parallelogram and a 2D affine transform maps it exactly.
+    const mapTerminal = (el: HTMLElement | undefined, o: { x: number; y: number }, deskIndex: number) => {
+      if (!el) return;
+      const s = monitorScreen(DESKS[deskIndex]);
+      const cx = o.x + s.x;
+      const cz = o.y + s.y;
+      const top = (s.z + s.height / 2) * K;
+      const bottom = (s.z - s.height / 2) * K;
+      // Viewer's left/right depend on which way the screen faces.
+      const left = cx - (s.facing * s.width) / 2;
+      const right = cx + (s.facing * s.width) / 2;
+      camera.getWorldDirection(look);
+      // Only when the screen faces us enough to read (and type into) without heavy skew.
+      const facingUs = -look.z * s.facing > 0.45;
+      const tl = toScreen(left, top, cz);
+      const tr = toScreen(right, top, cz);
+      const bl = toScreen(left, bottom, cz);
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const visible = facingUs && w > 0 && Math.hypot(tr.x - tl.x, tr.y - tl.y) > 60;
+      el.style.visibility = visible ? "visible" : "hidden";
+      if (!visible) return;
+      const m = [(tr.x - tl.x) / w, (tr.y - tl.y) / w, (bl.x - tl.x) / h, (bl.y - tl.y) / h, tl.x, tl.y];
+      el.style.transform = `matrix(${m.map((v) => v.toFixed(5)).join(",")})`;
+    };
     const place = (key: string, x: number, y: number, z: number) => {
       const el = overlays.current.get(key);
       if (!el) return;
@@ -440,6 +560,12 @@ function OverlayTracker({
       }
     }
     const byId = new Map(world.rooms.map((r) => [r.record.id, r.record]));
+    const open = byId.get(openRoomId);
+    if (open) {
+      const o = roomOrigin(open.cell);
+      place(`portal:${openRoomId}`, o.x + PORTAL.x, 1.1, o.y + PORTAL.y);
+      for (const a of agents) mapTerminal(overlays.current.get(`term:${a.id}`), o, a.deskIndex);
+    }
     for (const s of freeSides) {
       const record = byId.get(s.roomId);
       if (!record) continue;

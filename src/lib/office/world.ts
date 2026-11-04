@@ -1,7 +1,18 @@
-import { crewForRoom } from "./crew";
+import { agentCharacter } from "./crew";
 import type { Employee } from "./employees";
-import { MAIN_ROOM_ID, type RoomRecord } from "./rooms";
-import { OfficeSim, type AgentStatus } from "./sim";
+import type { RoomRecord } from "./rooms";
+import { OfficeSim, type AgentStatus, type Phase } from "./sim";
+
+/** An agent as the server reports it (just what the world needs to animate it). */
+export interface AgentSpec {
+  id: string;
+  roomId: string;
+  name: string;
+  model: string;
+  task?: string;
+  deskIndex: number;
+  phase: Phase;
+}
 
 export interface WorldRoom {
   record: RoomRecord;
@@ -15,7 +26,7 @@ export interface WorldSnapshot {
   statuses: AgentStatus[];
 }
 
-/** All rooms in the office, each with its own simulation, behind one store for React. */
+/** All rooms in the office, each with its own simulation (starting empty), behind one store for React. */
 export class OfficeWorld {
   private list: WorldRoom[] = [];
   private snapshot: WorldSnapshot;
@@ -79,8 +90,17 @@ export class OfficeWorld {
     this.flush();
   }
 
+  /** Hand each room its agents; rooms not listed are ignored. */
+  syncAgents(specs: AgentSpec[]) {
+    for (const room of this.list) {
+      const mine = specs.filter((s) => s.roomId === room.record.id);
+      room.sim.syncAgents(mine.map((s) => ({ emp: agentCharacter(s), deskIndex: s.deskIndex, phase: s.phase })));
+    }
+    this.flush();
+  }
+
   private addRoom(record: RoomRecord) {
-    const sim = new OfficeSim(crewForRoom(record, { main: record.id === MAIN_ROOM_ID }));
+    const sim = new OfficeSim();
     sim.setCalm(this.calm);
     sim.subscribe(() => {
       this.dirty = true;

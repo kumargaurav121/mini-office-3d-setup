@@ -291,14 +291,18 @@ class ScreenTexture {
     this.texture.magFilter = THREE.NearestFilter;
   }
 
-  draw(present: boolean, typing: boolean, t: number, accent: string) {
+  /** `state`: no one at this desk ("off"), its agent is away ("away"), or at the desk ("on"). */
+  draw(state: "off" | "away" | "on", typing: boolean, t: number, accent: string) {
     const scroll = typing ? Math.floor(t * 2.5) : 0;
     const cursor = typing && Math.floor(t * 3) % 2 === 0;
-    const key = present ? `on-${scroll}-${cursor}` : `off-${Math.floor(t * 6)}`;
+    const key = state === "on" ? `on-${scroll}-${cursor}` : state === "away" ? `away-${Math.floor(t * 6)}` : "off";
     if (key === this.key) return;
     this.key = key;
     const g = this.ctx;
-    if (!present) {
+    if (state === "off") {
+      g.fillStyle = "#07090d";
+      g.fillRect(0, 0, 96, 58);
+    } else if (state === "away") {
       g.fillStyle = "#0f141d";
       g.fillRect(0, 0, 96, 58);
       g.fillStyle = accent;
@@ -330,8 +334,8 @@ function Screen({ desk, owner, faceY, flipped }: { desk: DeskSlot; owner: Agent 
   const [screen] = useState(() => new ScreenTexture(desk.index));
   useEffect(() => () => screen.dispose(), [screen]);
   useFrame(({ clock }) => {
-    const present = owner?.mode === "desk";
-    screen.draw(present, owner ? isTyping(owner) : false, owner?.t ?? clock.elapsedTime, owner?.emp.look.shirt ?? "#9aa1ad");
+    const state = !owner ? "off" : owner.mode === "desk" ? "on" : "away";
+    screen.draw(state, owner ? isTyping(owner) : false, owner?.t ?? clock.elapsedTime, owner?.emp.look.shirt ?? "#9aa1ad");
   });
   return (
     <mesh position={[desk.seat.x, 20.5 * K, faceY]} rotation={[0, flipped ? Math.PI : 0, 0]}>

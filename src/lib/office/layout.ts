@@ -85,6 +85,35 @@ export const DESKS: DeskSlot[] = [
 
 export const CHAIR_HALF = 0.27;
 
+/** A desk's monitor screen: centre (x, y tiles; z design px), size, and which way it faces. */
+export interface MonitorScreen {
+  x: number;
+  y: number;
+  z: number;
+  /** Width in tiles, height in design pixels. */
+  width: number;
+  height: number;
+  /** +1 if the screen faces +y (toward the viewer's side for row B), -1 for -y. */
+  facing: 1 | -1;
+}
+
+/** The screen of the monitor on `desk`; furniture, terminals and the Watch camera all use this. */
+export function monitorScreen(desk: DeskSlot): MonitorScreen {
+  const towardViewer = desk.facing === "SW";
+  const body = towardViewer ? desk.y + desk.d - 0.32 : desk.y + 0.22;
+  return {
+    x: desk.seat.x,
+    y: towardViewer ? body - 0.002 : body + 0.072,
+    z: 20.5,
+    width: 0.74,
+    height: 9,
+    facing: towardViewer ? -1 : 1,
+  };
+}
+
+/** Where agents appear and leave: a portal pad in the open front-right corner (a walkable node). */
+export const PORTAL: Vec = { x: 9.5, y: 7.5 };
+
 export type Activity =
   | "working"
   | "walking"

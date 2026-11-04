@@ -1,77 +1,91 @@
 import { describe, expect, it, vi } from "vitest";
+import { DESKS, PORTAL } from "./layout";
 import { MAIN_ROOM_ID, type RoomRecord } from "./rooms";
-import { OfficeWorld } from "./world";
+import { OfficeWorld, type AgentSpec } from "./world";
 
 const main: RoomRecord = { id: MAIN_ROOM_ID, name: "tempo", path: "/Users/me/Repo/tempo", cell: { x: 0, z: 0 } };
 const api: RoomRecord = { id: "api-1", name: "api", path: "/Users/me/Repo/api", cell: { x: 1, z: 0 } };
+const spec = (id: string, deskIndex: number, phase: AgentSpec["phase"], roomId = MAIN_ROOM_ID): AgentSpec => ({
+  id,
+  roomId,
+  name: `Agent ${id}`,
+  model: "sonnet",
+  deskIndex,
+  phase,
+});
+const run = (world: OfficeWorld, seconds: number) => {
+  for (let t = 0; t < seconds; t += 0.05) world.update(0.05);
+};
+const agentIn = (world: OfficeWorld, roomIndex: number, id: string) => world.rooms[roomIndex].sim.agents.find((a) => a.emp.id === id);
 
 describe("office world", () => {
-  it("reports every agent in every room in one status list", () => {
+  it("starts with empty rooms", () => {
     const world = new OfficeWorld([main, api]);
-    const ids = world.getSnapshot().statuses.map((s) => s.id);
-    expect(ids).toHaveLength(8);
-    expect(new Set(ids).size).toBe(8);
-    expect(ids.filter((id) => id.startsWith("main/"))).toHaveLength(4);
-    expect(ids.filter((id) => id.startsWith("api-1/"))).toHaveLength(4);
+    expect(world.getSnapshot().statuses).toEqual([]);
+    expect(world.getSnapshot().crews).toEqual({ [MAIN_ROOM_ID]: [], "api-1": [] });
   });
 
-  it("passes status changes from any room on to subscribers", () => {
+  it("brings a new agent in through the portal and walks it to its desk", () => {
     const world = new OfficeWorld([main, api]);
-    const before = world.getSnapshot();
-    const listener = vi.fn();
-    world.subscribe(listener);
-    // A simulated minute is long enough for everyone to have left their desk at least once.
-    for (let t = 0; t < 60; t += 0.1) world.update(0.1);
-    expect(listener).toHaveBeenCalled();
-    expect(world.getSnapshot()).not.toBe(before);
-    expect(world.getSnapshot().statuses.some((s) => s.activity !== "working")).toBe(true);
+    world.syncAgents([spec("a1", 2, "working", "api-1")]);
+    const agent = agentIn(world, 1, "a1")!;
+    expect(agent.pos).toEqual(PORTAL);
+    expect(world.getSnapshot().crews["api-1"].map((e) => e.name)).toEqual(["Agent a1"]);
+    run(world, 30);
+    expect(agent.mode).toBe("desk");
+    expect(agent.pos).toEqual(DESKS[2].seat);
   });
 
-  it("seats a new room's crew on sync, keeps existing rooms running, and ignores no-op syncs", () => {
+  it("sends an idle agent on a break and calls it back when its session gets busy", () => {
     const world = new OfficeWorld([main]);
-    for (let t = 0; t < 30; t += 0.1) world.update(0.1);
-    const mainSim = world.rooms[0].sim;
-    const mainStatuses = world.getSnapshot().statuses;
-    const listener = vi.fn();
-    world.subscribe(listener);
-
-    world.syncRooms([main, api]);
-    const snap = world.getSnapshot();
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(snap.rooms.map((r) => r.id)).toEqual([MAIN_ROOM_ID, "api-1"]);
-    expect(world.rooms[0].sim).toBe(mainSim);
-    expect(snap.statuses.filter((s) => s.id.startsWith("main/"))).toEqual(mainStatuses);
-    expect(snap.statuses.filter((s) => s.id.startsWith("api-1/"))).toHaveLength(4);
-
-    world.syncRooms([main, api]);
-    expect(listener).toHaveBeenCalledTimes(1);
+    world.syncAgents([spec("a1", 0, "idle")]);
+    let tookBreak = false;
+    for (let t = 0; t < 60; t += 0.05) {
+      world.update(0.05);
+      if (agentIn(world, 0, "a1")!.mode === "poi") tookBreak = true;
+    }
+    expect(tookBreak).toBe(true);
+    world.syncAgents([spec("a1", 0, "working")]);
+    run(world, 40);
+    const agent = agentIn(world, 0, "a1")!;
+    expect(agent.mode).toBe("desk");
+    expect(agent.pos).toEqual(DESKS[0].seat);
   });
 
-  it("keeps everyone at their desks in calm mode, including rooms added later", () => {
+  it("walks an agent whose session ended back into the portal, then removes it", () => {
+    const world = new OfficeWorld([main]);
+    world.syncAgents([spec("a1", 0, "working")]);
+    run(world, 30);
+    const listener = vi.fn();
+    world.subscribe(listener);
+    world.syncAgents([spec("a1", 0, "ended")]);
+    run(world, 40);
+    expect(world.rooms[0].sim.agents).toHaveLength(0);
+    expect(world.getSnapshot().crews[MAIN_ROOM_ID]).toEqual([]);
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it("keeps idle agents at their desks in calm mode", () => {
     const world = new OfficeWorld([main]);
     world.setCalm(true);
-    world.syncRooms([main, api]);
-    for (let t = 0; t < 60; t += 0.1) world.update(0.1);
-    expect(world.getSnapshot().statuses.every((s) => s.activity === "working")).toBe(true);
+    world.syncAgents([spec("a1", 0, "idle")]);
+    run(world, 60);
+    expect(agentIn(world, 0, "a1")!.mode).toBe("desk");
   });
 
-  it("drops removed rooms and moves rooms on sync, without resetting the people in them", () => {
+  it("drops removed rooms and moves rooms on sync, keeping the agents in them", () => {
     const web: RoomRecord = { id: "web-1", name: "web", path: "/Users/me/Repo/web", cell: { x: 0, z: 1 } };
     const world = new OfficeWorld([main, api, web]);
-    for (let t = 0; t < 30; t += 0.1) world.update(0.1);
+    world.syncAgents([spec("a1", 0, "working", "api-1")]);
     const apiSim = world.rooms[1].sim;
-    const listener = vi.fn();
-    world.subscribe(listener);
-
     world.syncRooms([main, { ...api, cell: { x: -1, z: 0 } }]);
     const snap = world.getSnapshot();
-    expect(listener).toHaveBeenCalledTimes(1);
     expect(snap.rooms.map((r) => [r.id, r.cell])).toEqual([
       [MAIN_ROOM_ID, { x: 0, z: 0 }],
       ["api-1", { x: -1, z: 0 }],
     ]);
     expect(world.rooms[1].sim).toBe(apiSim);
-    expect(snap.statuses.some((s) => s.id.startsWith("web-1/"))).toBe(false);
     expect(snap.crews["web-1"]).toBeUndefined();
+    expect(apiSim.agents).toHaveLength(1);
   });
 });

@@ -1,11 +1,17 @@
 import type { Vec } from "./util";
 import type { Pose } from "./character";
-import { EMPLOYEES, type Employee } from "./employees";
-import { DESKS, POIS, type Activity, type DeskSlot, type Dir, type IconName, type Poi } from "./layout";
+import type { Employee } from "./employees";
+import { DESKS, POIS, PORTAL, type Activity, type DeskSlot, type Dir, type IconName, type Poi } from "./layout";
 import { findPath } from "./pathfinding";
 
 /** Walking speed in tiles per second. */
 const SPEED = 1.7;
+
+/** What the agent's Claude Code session is doing (mirrors the server's SessionPhase). */
+export type Phase = "starting" | "trust" | "working" | "permission" | "idle" | "ended";
+
+/** Busy sessions keep their agent at the desk. */
+const isBusy = (phase: Phase) => phase !== "idle" && phase !== "ended";
 
 export interface AgentStatus {
   id: string;
@@ -16,14 +22,17 @@ export interface AgentStatus {
 export interface Agent {
   emp: Employee;
   desk: DeskSlot;
+  phase: Phase;
   pos: Vec;
   dir: Dir;
   mode: "desk" | "walk" | "poi";
-  heading: "poi" | "desk";
+  heading: "poi" | "desk" | "portal";
   poi: Poi | null;
   lastActivity: Activity | null;
   path: Vec[];
-  /** Seconds left at the desk or at the current spot. */
+  /** Re-plan toward `heading` at the next waypoint (the session changed mid-walk). */
+  replan: boolean;
+  /** Seconds left at the desk (idle) or at the current spot. */
   timer: number;
   duration: number;
   t: number;
@@ -35,6 +44,7 @@ export interface Agent {
 }
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
+const snap = (v: number) => Math.round(v * 2) / 2;
 
 function dirFor(dx: number, dy: number): Dir {
   if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? "SE" : "NW";
@@ -52,48 +62,18 @@ function pickWeighted(pois: Poi[]): Poi {
 }
 
 /**
- * Drives the employees: work at the desk for a while, wander to a point of
- * interest, hang out, walk back. Construction is deterministic (it also runs
- * during SSR); all randomness starts on the first update().
+ * One room's people. Agents arrive through the portal, sit at their desk while
+ * their session is busy, wander off for a break when it's idle, and walk back
+ * out through the portal when it ends.
  */
 export class OfficeSim {
-  readonly agents: Agent[];
-  /** When true nobody leaves their desk (prefers-reduced-motion). */
+  readonly agents: Agent[] = [];
+  /** When true idle agents stay at their desk (prefers-reduced-motion). */
   private calm = false;
   private occupied = new Set<string>();
   private listeners = new Set<() => void>();
-  private snapshot: AgentStatus[];
+  private snapshot: AgentStatus[] = [];
   private dirty = false;
-  private started = false;
-
-  constructor(employees: Employee[] = EMPLOYEES) {
-    if (employees.length > DESKS.length) {
-      throw new Error(`OfficeSim: ${employees.length} employees but only ${DESKS.length} desks in layout.ts`);
-    }
-    this.agents = employees.map((emp, i) => {
-      const desk = DESKS[i];
-      return {
-        emp,
-        desk,
-        pos: { ...desk.seat },
-        dir: desk.facing,
-        mode: "desk",
-        heading: "desk",
-        poi: null,
-        lastActivity: null,
-        path: [],
-        timer: 0,
-        duration: 0,
-        t: i * 1.7,
-        walkT: 0,
-        nextBlink: 2 + i,
-        blinkLeft: 0,
-        bubble: null,
-        status: { id: emp.id, activity: "working", label: emp.focus },
-      };
-    });
-    this.snapshot = this.agents.map((a) => a.status);
-  }
 
   subscribe = (cb: () => void) => {
     this.listeners.add(cb);
@@ -108,17 +88,96 @@ export class OfficeSim {
     this.calm = calm;
   }
 
+  /** Match the room's agents to the server: new ones arrive, phases update, missing ones leave. */
+  syncAgents(people: { emp: Employee; deskIndex: number; phase: Phase }[]) {
+    const wanted = new Map(people.map((p) => [p.emp.id, p]));
+    for (const a of this.agents) {
+      const next = wanted.get(a.emp.id);
+      this.setPhase(a, next ? next.phase : "ended");
+    }
+    for (const p of people) {
+      if (p.phase === "ended" || this.agents.some((a) => a.emp.id === p.emp.id)) continue;
+      this.arrive(p.emp, DESKS[p.deskIndex] ?? DESKS[0], p.phase);
+    }
+    this.flush();
+  }
+
   update(dt: number) {
-    if (!this.started) {
-      this.started = true;
-      for (const a of this.agents) a.timer = rand(3, 16);
+    for (const a of [...this.agents]) this.step(a, dt);
+    this.flush();
+  }
+
+  private flush() {
+    if (!this.dirty) return;
+    this.dirty = false;
+    this.snapshot = this.agents.map((a) => a.status);
+    for (const l of this.listeners) l();
+  }
+
+  private arrive(emp: Employee, desk: DeskSlot, phase: Phase) {
+    const agent: Agent = {
+      emp,
+      desk,
+      phase,
+      pos: { ...PORTAL },
+      dir: "NW",
+      mode: "walk",
+      heading: "desk",
+      poi: null,
+      lastActivity: null,
+      path: [...findPath(PORTAL, desk.approach), { ...desk.seat }],
+      replan: false,
+      timer: 0,
+      duration: 0,
+      t: Math.random() * 5,
+      walkT: 0,
+      nextBlink: rand(1, 4),
+      blinkLeft: 0,
+      bubble: null,
+      status: { id: emp.id, activity: "walking", label: "Arriving" },
+    };
+    this.agents.push(agent);
+    this.dirty = true;
+  }
+
+  private setPhase(a: Agent, phase: Phase) {
+    if (a.phase === phase) return;
+    a.phase = phase;
+    if (phase === "ended") {
+      this.headFor(a, "portal");
+    } else if (isBusy(phase) && a.heading === "poi") {
+      this.headFor(a, "desk");
+    } else if (phase === "idle" && a.mode === "desk") {
+      a.timer = rand(3, 8);
     }
-    for (const a of this.agents) this.step(a, dt);
-    if (this.dirty) {
-      this.dirty = false;
-      this.snapshot = this.agents.map((a) => a.status);
-      for (const l of this.listeners) l();
+    if (a.mode === "desk") this.setStatus(a, "working", a.emp.focus);
+  }
+
+  /** Send an agent to its desk or out through the portal from wherever it is. */
+  private headFor(a: Agent, target: "desk" | "portal") {
+    if (a.heading === target && a.mode === "walk") return;
+    if (a.mode === "walk") {
+      // Finish the current leg, then re-plan from that waypoint.
+      a.heading = target;
+      a.replan = true;
+      return;
     }
+    const start: Vec[] = [];
+    if (a.mode === "desk") start.push(a.desk.approach);
+    if (a.mode === "poi" && a.poi) {
+      this.occupied.delete(a.poi.id);
+      start.push(...[...a.poi.enter].reverse().slice(1), a.poi.stand);
+      a.poi = null;
+    }
+    const from = start.at(-1) ?? { x: snap(a.pos.x), y: snap(a.pos.y) };
+    a.path = [...start, ...this.route(from, target, a)];
+    a.heading = target;
+    a.mode = "walk";
+    this.setStatus(a, "walking", target === "portal" ? "Leaving" : "Heading back to desk");
+  }
+
+  private route(from: Vec, target: "desk" | "portal", a: Agent): Vec[] {
+    return target === "portal" ? findPath(from, PORTAL) : [...findPath(from, a.desk.approach), { ...a.desk.seat }];
   }
 
   private step(a: Agent, dt: number) {
@@ -133,13 +192,10 @@ export class OfficeSim {
 
     switch (a.mode) {
       case "desk":
-        a.timer -= dt;
-        if (!a.bubble && Math.random() < dt / 35) this.say(a, this.deskEmote(a));
-        if (a.timer <= 0 && !this.calm) this.leaveDesk(a);
+        if (a.phase === "idle" && !this.calm && (a.timer -= dt) <= 0) this.takeBreak(a);
         break;
       case "poi":
-        a.timer -= dt;
-        if (a.timer <= 0) this.leavePoi(a);
+        if ((a.timer -= dt) <= 0) this.headFor(a, "desk");
         break;
       case "walk":
         this.walk(a, dt);
@@ -147,12 +203,7 @@ export class OfficeSim {
     }
   }
 
-  private deskEmote(a: Agent): IconName {
-    if (a.emp.look.accessory === "headphones" && Math.random() < 0.6) return "music";
-    return Math.random() < 0.65 ? "idea" : "heart";
-  }
-
-  private leaveDesk(a: Agent) {
+  private takeBreak(a: Agent) {
     const options = POIS.filter((p) => !this.occupied.has(p.id) && p.activity !== a.lastActivity);
     if (options.length === 0) {
       a.timer = rand(4, 8);
@@ -168,17 +219,6 @@ export class OfficeSim {
     this.setStatus(a, "walking", `Heading to ${poi.place}`);
   }
 
-  private leavePoi(a: Agent) {
-    const poi = a.poi!;
-    this.occupied.delete(poi.id);
-    const back = [...poi.enter].reverse().slice(1);
-    a.path = [...back, poi.stand, ...findPath(poi.stand, a.desk.approach), { ...a.desk.seat }];
-    a.poi = null;
-    a.heading = "desk";
-    a.mode = "walk";
-    this.setStatus(a, "walking", "Heading back to desk");
-  }
-
   private walk(a: Agent, dt: number) {
     let remaining = SPEED * dt;
     a.walkT += dt;
@@ -192,27 +232,41 @@ export class OfficeSim {
         a.pos = { x: target.x, y: target.y };
         a.path.shift();
         remaining -= dist;
+        if (a.replan) {
+          a.replan = false;
+          if (a.poi) this.occupied.delete(a.poi.id);
+          a.poi = null;
+          const target2 = a.heading === "portal" ? "portal" : "desk";
+          a.heading = target2;
+          a.path = this.route({ x: snap(a.pos.x), y: snap(a.pos.y) }, target2, a);
+          this.setStatus(a, "walking", target2 === "portal" ? "Leaving" : "Heading back to desk");
+        }
       } else {
         a.pos = { x: a.pos.x + (dx / dist) * remaining, y: a.pos.y + (dy / dist) * remaining };
         remaining = 0;
       }
     }
-    if (a.path.length === 0) this.arrive(a);
+    if (a.path.length === 0) this.arrived(a);
   }
 
-  private arrive(a: Agent) {
+  private arrived(a: Agent) {
+    if (a.heading === "portal") {
+      this.agents.splice(this.agents.indexOf(a), 1);
+      this.dirty = true;
+      return;
+    }
     if (a.heading === "poi" && a.poi) {
       a.mode = "poi";
       a.dir = a.poi.facing;
       a.duration = a.timer = rand(...a.poi.duration);
       this.say(a, a.poi.icon, 2.6);
       this.setStatus(a, a.poi.activity, a.poi.label);
-    } else {
-      a.mode = "desk";
-      a.dir = a.desk.facing;
-      a.timer = rand(14, 30);
-      this.setStatus(a, "working", a.emp.focus);
+      return;
     }
+    a.mode = "desk";
+    a.dir = a.desk.facing;
+    a.timer = rand(6, 14);
+    this.setStatus(a, "working", a.emp.focus);
   }
 
   private say(a: Agent, icon: IconName, life = 2.2) {
@@ -230,7 +284,7 @@ export function isSeated(a: Agent): boolean {
 }
 
 export function isTyping(a: Agent): boolean {
-  return a.mode === "desk" && a.t % 9 < 6.5;
+  return a.mode === "desk" && a.phase === "working";
 }
 
 /** 0..1 through the current activity at a point of interest. */

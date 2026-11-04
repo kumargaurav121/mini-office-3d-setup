@@ -2,12 +2,14 @@
 
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import dynamic from "next/dynamic";
+import { answerAsk, endAgent } from "@/app/agent-actions";
 import { addRoom, moveRoom, removeRoom, type ActionResult } from "@/app/office-actions";
-import { roomIdOfAgent } from "@/lib/office/crew";
 import { MAIN_ROOM_ID, type Cell, type OpenSide, type RoomRecord } from "@/lib/office/rooms";
 import { OfficeWorld } from "@/lib/office/world";
+import type { AgentInfo } from "@/server/agents/registry";
 import { RepoPicker } from "./RepoPicker";
 import { Roster } from "./Roster";
+import { SpawnDialog } from "./SpawnDialog";
 import type { Focus } from "./three/CameraRig";
 
 // three.js only loads in the browser, in its own chunk.
@@ -23,6 +25,23 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
   const [adding, setAdding] = useState<OpenSide | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [spawnRoomId, setSpawnRoomId] = useState<string | null>(null);
+  /** Agent whose monitor we're watching: its arrow and tag get out of the way. */
+  const [watchingId, setWatchingId] = useState<string | null>(null);
+
+  // Live agent list from the server; it survives reloads because the agents run there.
+  useEffect(() => {
+    const stream = new EventSource("/api/agents");
+    stream.onmessage = (e) => setAgents(JSON.parse(e.data) as AgentInfo[]);
+    return () => stream.close();
+  }, []);
+
+  useEffect(() => {
+    world.syncAgents(agents.map((a) => ({ ...a, phase: a.session.phase })));
+  }, [world, agents]);
+
+  const roomOfAgent = (id: string) => agents.find((a) => a.id === id)?.roomId;
 
   useEffect(() => {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -34,7 +53,8 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || inTerminal(e)) return;
+      setWatchingId(null);
       setMovingId(null);
       setSelectedId(null);
     };
@@ -50,6 +70,7 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
 
   /** Fly to a room and open it (lower its walls); null flies out to the whole office. */
   const focusRoom = (roomId: string | null) => {
+    setWatchingId(null);
     setFocus((f) => ({ roomId, request: f.request + 1 }));
     if (roomId) setOpenRoomId(roomId);
   };
@@ -73,18 +94,32 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
 
   const remove = async (id: string) => {
     if (!applyRooms(await removeRoom(id))) return;
-    if (selectedId && roomIdOfAgent(selectedId) === id) setSelectedId(null);
+    if (selectedId && roomOfAgent(selectedId) === id) setSelectedId(null);
     if (openRoomId === id) focusRoom(MAIN_ROOM_ID);
   };
 
   const selectInScene = (id: string | null) => {
+    if (id !== watchingId) setWatchingId(null);
     setSelectedId(id);
-    if (id) setOpenRoomId(roomIdOfAgent(id));
+    const room = id && roomOfAgent(id);
+    if (room) setOpenRoomId(room);
   };
 
   const selectFromRoster = (id: string | null) => {
+    if (id !== watchingId) setWatchingId(null);
     setSelectedId(id);
-    if (id) focusRoom(roomIdOfAgent(id));
+    const room = id && roomOfAgent(id);
+    if (room) focusRoom(room);
+  };
+
+  /** Fly up to an agent's monitor to read its terminal. */
+  const watch = (id: string) => {
+    const agent = agents.find((a) => a.id === id);
+    if (!agent) return;
+    setSelectedId(id);
+    setWatchingId(id);
+    setOpenRoomId(agent.roomId);
+    setFocus((f) => ({ roomId: agent.roomId, deskIndex: agent.deskIndex, request: f.request + 1 }));
   };
 
   const pickFolder = async (path: string): Promise<string | null> => {
@@ -98,7 +133,9 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
     return null;
   };
 
-  const working = snapshot.statuses.filter((s) => s.activity === "working").length;
+  const working = agents.filter((a) => a.session.phase === "working").length;
+  const waiting = agents.filter((a) => a.session.ask).length;
+  const spawnRoom = snapshot.rooms.find((r) => r.id === spawnRoomId);
   const anchorRoom = adding ? snapshot.rooms.find((r) => r.id === adding.roomId) : undefined;
 
   return (
@@ -109,13 +146,14 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
           <div>
             <h1 className="font-pixel text-xl leading-none">Mini Office</h1>
             <p className="mt-1 font-mono text-[11px] text-muted">
-              {snapshot.rooms.length} {snapshot.rooms.length === 1 ? "room" : "rooms"} · {snapshot.statuses.length} agents
+              {snapshot.rooms.length} {snapshot.rooms.length === 1 ? "room" : "rooms"} · {agents.length}{" "}
+              {agents.length === 1 ? "agent" : "agents"}
             </p>
           </div>
         </div>
         <div className="flex gap-2 font-mono text-[11px]" aria-live="polite">
           <Chip dot="bg-emerald-400">{working} working</Chip>
-          <Chip dot="bg-amber-400">{snapshot.statuses.length - working} away from desk</Chip>
+          <Chip dot="bg-amber-400">{waiting} waiting for you</Chip>
         </div>
       </header>
       <main className="flex min-h-0 flex-1 flex-col lg:flex-row">
@@ -135,14 +173,24 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
           onMoveTo={moveTo}
           onCancelMove={() => setMovingId(null)}
           onRemoveRoom={remove}
+          agents={agents}
+          watchingId={watchingId}
+          onSpawn={setSpawnRoomId}
+          onAnswer={(agentId, askId, yes) => void answerAsk(agentId, askId, yes)}
+          onWatch={watch}
+          onEndAgent={(id) => void endAgent(id)}
         />
         <Roster
           snapshot={snapshot}
+          agents={agents}
           selectedId={selectedId}
           hoveredId={hoveredId}
           onHover={setHoveredId}
           onSelect={selectFromRoster}
           onFocusRoom={focusRoom}
+          onSpawn={setSpawnRoomId}
+          onWatch={watch}
+          onEndAgent={(id) => void endAgent(id)}
         />
       </main>
       {notice && (
@@ -152,6 +200,15 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
         >
           {notice}
         </div>
+      )}
+      {spawnRoom && (
+        <SpawnDialog
+          key={spawnRoom.id}
+          roomId={spawnRoom.id}
+          roomName={spawnRoom.name}
+          existing={agents.map((a) => a.name)}
+          onClose={() => setSpawnRoomId(null)}
+        />
       )}
       {adding && anchorRoom && (
         <RepoPicker
@@ -166,6 +223,9 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
     </div>
   );
 }
+
+/** True for key events typed into an agent terminal (xterm.js). */
+const inTerminal = (e: KeyboardEvent) => e.target instanceof Element && e.target.closest(".xterm") !== null;
 
 function StageLoading() {
   return (
