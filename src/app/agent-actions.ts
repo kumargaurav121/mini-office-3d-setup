@@ -2,7 +2,7 @@
 
 import { headers } from "next/headers";
 import { agents, existingAgents, isLocalHost } from "@/server/agents";
-import { AgentError, type AgentInfo, type Model, type PermissionMode } from "@/server/agents/registry";
+import { AgentError, type AgentInfo, type Delivery, type Model, type PermissionMode } from "@/server/agents/registry";
 import { getStore } from "@/server/office";
 import type { ActionResult } from "./office-actions";
 
@@ -53,4 +53,11 @@ export async function sendInput(agentId: string, data: string): Promise<void> {
   if (!isLocalHost((await headers()).get("host"))) return;
   if (typeof data !== "string" || data.length === 0 || data.length > 64 * 1024) return;
   existingAgents()?.input(String(agentId), data);
+}
+
+/** Something said to an agent with push-to-talk: typed into its session now, or once it's free. */
+export async function tellAgent(agentId: string, words: string): Promise<Delivery | null> {
+  if (!isLocalHost((await headers()).get("host"))) return null;
+  if (typeof words !== "string") return null;
+  return existingAgents()?.tell(String(agentId), words) ?? null;
 }

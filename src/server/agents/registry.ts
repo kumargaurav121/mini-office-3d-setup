@@ -26,6 +26,8 @@ export interface SpawnRequest {
 }
 
 export type Model = "default" | "opus" | "sonnet" | "haiku";
+/** When something said to an agent reaches its session: right away, or once it's free. */
+export type Delivery = "now" | "queued";
 export type PermissionMode = "auto" | "default" | "plan";
 
 export interface SpawnForm {
@@ -44,6 +46,8 @@ export interface AgentInfo {
   task: string;
   deskIndex: number;
   session: SessionView;
+  /** Its latest answer to something you said to it (the id changes with each new answer). */
+  said: { id: string; text: string } | null;
 }
 
 /** A user-fixable problem (room full, empty task…); the message is shown in the UI. */
@@ -59,6 +63,12 @@ interface Agent extends AgentInfo {
   /** The claude process has actually exited. */
   exited: boolean;
   removing: boolean;
+  /** Things said to it while it was busy, typed in one at a time as it finishes. */
+  queue: string[];
+  /** Your words typed into its session, until Claude Code reports receiving them. */
+  typed: string | null;
+  /** The prompt it's working on is your words, so its answer gets said back. */
+  awaitingReply: boolean;
 }
 
 /** Enough scrollback to redraw the screen for a late viewer. */
@@ -68,6 +78,10 @@ const ENDED_LINGER_MS = 20_000;
 /** Claude Code can take a while to quit; escalate from Ctrl+C to SIGTERM to SIGKILL. */
 const TERM_AFTER_MS = 1500;
 const KILL_AFTER_MS = 5000;
+/** Pause between typing a prompt and pressing Enter, so Claude Code sees two keystrokes, not a paste. */
+const ENTER_AFTER_MS = 120;
+/** Longest thing you can say to an agent in one go. */
+const MAX_TELL = 2000;
 
 /** Hook events we listen to; each runs our hook script, which reports to the server. */
 const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd"];
@@ -118,8 +132,8 @@ export class AgentRegistry {
     for (const l of this.listeners) l();
   }
 
-  private update(agent: Agent, session: SessionView) {
-    agent.session = session;
+  private update(agent: Agent, session: Partial<SessionView>) {
+    agent.session = { ...agent.session, ...session };
     this.changed();
   }
 
@@ -132,6 +146,24 @@ export class AgentRegistry {
     },
   ) {}
 
+  /**
+   * Dev-mode code reloads keep the running registry (its agents live on in it)
+   * but load a new class: carry that instance over to this version's code.
+   */
+  static adopt(running: object): AgentRegistry {
+    if (running instanceof AgentRegistry) return running;
+    Object.setPrototypeOf(running, AgentRegistry.prototype);
+    const reg = running as AgentRegistry;
+    for (const a of reg.agents.values()) {
+      a.queue ??= [];
+      a.typed ??= null;
+      a.awaitingReply ??= false;
+      a.said ??= null;
+      a.session = { ...initialSession(), ...a.session };
+    }
+    return reg;
+  }
+
   list(): AgentInfo[] {
     return [...this.agents.values()].map(
       (a): AgentInfo => ({
@@ -142,6 +174,7 @@ export class AgentRegistry {
         task: a.task,
         deskIndex: a.deskIndex,
         session: a.session,
+        said: a.said,
       }),
     );
   }
@@ -192,6 +225,10 @@ export class AgentRegistry {
       viewers: new Set(),
       exited: false,
       removing: false,
+      queue: [],
+      typed: null,
+      awaitingReply: false,
+      said: null,
     };
     this.agents.set(id, agent);
     pty.onData((chunk) => this.onOutput(agent, room.path, chunk));
@@ -208,7 +245,18 @@ export class AgentRegistry {
     const agent = this.agents.get(agentId);
     if (!agent || agent.token !== token) return Promise.reject(new AgentError("Unknown agent or bad token."));
     if (event.hook_event_name !== "PermissionRequest") {
+      if (event.hook_event_name === "UserPromptSubmit") {
+        // Only the answer to your own words is said back, not to something typed in the terminal.
+        agent.awaitingReply = agent.typed !== null && event.prompt?.trim() === agent.typed;
+        agent.typed = null;
+      }
       this.update(agent, applyHook(agent.session, event));
+      if (event.hook_event_name === "Stop" && agent.awaitingReply) {
+        agent.awaitingReply = false;
+        agent.said = { id: randomUUID(), text: agent.session.lastReply ?? "" };
+      }
+      const next = agent.session.phase === "idle" && agent.queue.shift();
+      if (next) this.deliver(agent, next);
       return Promise.resolve(null);
     }
     const ask: Ask = { id: randomUUID(), kind: "permission", title: permissionTitle(event.tool_name, event.tool_input) };
@@ -256,6 +304,37 @@ export class AgentRegistry {
     const agent = this.agents.get(agentId);
     if (!agent || agent.session.phase === "ended") return;
     agent.pty.write(data);
+  }
+
+  /**
+   * Something you said to an agent, typed into its session as a prompt: now if
+   * it's free, else once it finishes (never into a permission menu or mid-startup).
+   */
+  tell(agentId: string, words: string): Delivery | null {
+    const agent = this.agents.get(agentId);
+    const text = words
+      .replace(/[\x00-\x1f\x7f]/g, " ")
+      .replace(/\s+/g, " ")
+      // A leading "!", "/" or "#" would switch Claude Code into shell, command or memory mode.
+      .replace(/^[\s!/#]+/, "")
+      .trim()
+      .slice(0, MAX_TELL);
+    if (!agent || agent.removing || !text) return null;
+    if (agent.session.phase !== "idle") {
+      agent.queue.push(text);
+      return "queued";
+    }
+    this.deliver(agent, text);
+    return "now";
+  }
+
+  private deliver(agent: Agent, text: string) {
+    agent.typed = text;
+    // Text and Enter go separately: together they read as a paste, and the Enter becomes a newline.
+    agent.pty.write(text);
+    setTimeout(() => !agent.removing && agent.pty.write("\r"), ENTER_AFTER_MS).unref?.();
+    // Busy at once (back to the desk), ahead of Claude Code's own hook saying so.
+    this.update(agent, applyHook(agent.session, { hook_event_name: "UserPromptSubmit", prompt: text }));
   }
 
   /** On server shutdown: don't leave agents running on their own. */
@@ -312,7 +391,7 @@ export class AgentRegistry {
   }
 
   /** Close out a pending question; `next` (if given) becomes the agent's session state. */
-  private settle(askId: string, reply: HookReply, next: SessionView | null = { phase: "working", activity: "Asking in the terminal", ask: null }) {
+  private settle(askId: string, reply: HookReply, next: Partial<SessionView> | null = { phase: "working", activity: "Asking in the terminal", ask: null }) {
     const pending = this.pending.get(askId);
     if (!pending) return;
     this.pending.delete(askId);

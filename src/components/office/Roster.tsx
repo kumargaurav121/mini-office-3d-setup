@@ -127,7 +127,8 @@ export function Roster(props: Props) {
       })}
       <p className="mt-auto pt-2 font-mono text-[11px] leading-relaxed text-muted">
         Spawn agents at a room&apos;s portal. Watch zooms into an agent&apos;s screen; answer its questions in the speech
-        bubble. <kbd className="text-ink">Esc</kbd> clears.
+        bubble. Hold <kbd className="text-ink">Space</kbd> and say a name to talk to an agent: &ldquo;Ada, what are you
+        doing?&rdquo; <kbd className="text-ink">Esc</kbd> clears.
       </p>
     </aside>
   );

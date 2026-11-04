@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -62,6 +62,11 @@ interface Props {
   onAnswer: (agentId: string, askId: string, yes: boolean) => void;
   onWatch: (agentId: string) => void;
   onEndAgent: (agentId: string) => void;
+  /** What agents are saying right now, shown as speech bubbles. */
+  speech: Partial<Record<string, string>>;
+  onDismissSpeech: (agentId: string) => void;
+  /** Extra controls laid over the stage. */
+  children?: ReactNode;
 }
 
 export default function Office3D(props: Props) {
@@ -241,9 +246,10 @@ export default function Office3D(props: Props) {
           (snapshot.crews[r.id] ?? []).map((emp) => {
             const icon = bubbles[emp.id];
             const selected = emp.id === selectedId;
-            const tagged = (emp.id === hoveredId || selected) && emp.id !== props.watchingId;
             const info = infoOf(emp.id);
             const ask = info?.session.ask;
+            const line = props.speech[emp.id];
+            const tagged = (emp.id === hoveredId || selected) && emp.id !== props.watchingId && !line;
             return (
               <div
                 key={emp.id}
@@ -274,6 +280,18 @@ export default function Office3D(props: Props) {
                       <div className="absolute -bottom-[7px] left-1/2 size-3 -translate-x-1/2 rotate-45 border-r-2 border-b-2 border-[#1d1a2b] bg-white" />
                     </div>
                   )}
+                  {line && (
+                    <button
+                      type="button"
+                      onClick={() => props.onDismissSpeech(emp.id)}
+                      title="Dismiss"
+                      className="pointer-events-auto relative max-w-64 border-2 border-[#1d1a2b] bg-white px-2.5 py-1.5 text-left font-pixel text-sm leading-tight text-[#1d1a2b] shadow-[3px_3px_0_0_rgba(0,0,0,0.35)]"
+                    >
+                      <span className="sr-only">{emp.name} says: </span>
+                      {line}
+                      <span className="absolute -bottom-[7px] left-1/2 size-3 -translate-x-1/2 rotate-45 border-r-2 border-b-2 border-[#1d1a2b] bg-white" aria-hidden />
+                    </button>
+                  )}
                   {tagged && !ask && (
                     <div className="border-2 border-[#1d1a2b] bg-ink px-2 py-1 text-center whitespace-nowrap text-[#1d1a2b] shadow-[3px_3px_0_0_rgba(0,0,0,0.35)]">
                       <div className="font-pixel text-sm leading-none">{emp.name}</div>
@@ -290,7 +308,7 @@ export default function Office3D(props: Props) {
                       )}
                     </div>
                   )}
-                  {icon && !ask && (
+                  {icon && !ask && !line && (
                     <div className="relative border-2 border-[#1d1a2b] bg-white p-1">
                       <PixelIcon name={icon} size={21} />
                       <div className="absolute -bottom-[7px] left-1/2 size-3 -translate-x-1/2 rotate-45 border-r-2 border-b-2 border-[#1d1a2b] bg-white" />
@@ -330,6 +348,7 @@ export default function Office3D(props: Props) {
           Show all
         </button>
       </div>
+      {props.children}
     </div>
   );
 }

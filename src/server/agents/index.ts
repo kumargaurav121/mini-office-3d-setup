@@ -62,9 +62,15 @@ function agentEnv(): Record<string, string> {
   return env;
 }
 
+/** The registry if it already exists, on this version of the code (see AgentRegistry.adopt). */
+export function existingAgents(): AgentRegistry | undefined {
+  if (g.__miniOfficeAgents) g.__miniOfficeAgents = AgentRegistry.adopt(g.__miniOfficeAgents);
+  return g.__miniOfficeAgents;
+}
+
 /** The registry, created (with its hook socket) on first use. */
 export async function agents(): Promise<AgentRegistry> {
-  if (!g.__miniOfficeAgents) {
+  if (!existingAgents()) {
     const pty = await import("node-pty");
     const hookSocket = privateSocketPath();
     const registry = new AgentRegistry({
@@ -84,12 +90,7 @@ export async function agents(): Promise<AgentRegistry> {
     // Agents die with the server rather than running on unattended.
     process.once("exit", () => registry.killAll());
   }
-  return g.__miniOfficeAgents;
-}
-
-/** The registry if it already exists (read-only endpoints don't need to create it). */
-export function existingAgents(): AgentRegistry | undefined {
-  return g.__miniOfficeAgents;
+  return g.__miniOfficeAgents!;
 }
 
 const LOCAL = new Set(["localhost", "127.0.0.1", "[::1]"]);

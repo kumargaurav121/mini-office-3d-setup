@@ -23,6 +23,14 @@ describe("agent session state from Claude Code hooks", () => {
     expect(s).toMatchObject({ phase: "ended", ask: null });
   });
 
+  it("remembers the latest request and Claude's final reply to it", () => {
+    let s = applyHook(initialSession(), { hook_event_name: "UserPromptSubmit", prompt: "Check the stock price" });
+    s = applyHook(s, { hook_event_name: "PreToolUse", tool_name: "WebSearch" });
+    expect(s).toMatchObject({ request: "Check the stock price", lastReply: null });
+    s = applyHook(s, { hook_event_name: "Stop", last_assistant_message: "It's up 3% today." });
+    expect(s).toMatchObject({ phase: "idle", request: "Check the stock price", lastReply: "It's up 3% today." });
+  });
+
   it("spots Claude Code's trust-this-folder prompt in raw terminal output", () => {
     // As captured from the real CLI: escape codes stand in for the spaces between words.
     const raw = "\x1b[1mQuick\x1b[1Csafety\x1b[1Ccheck\x1b[22m ... \x1b[38;5;153m❯\x1b[39m No,\x1b[1Cexit\r\n  Yes,\x1b[1CI\x1b[1Ctrust\x1b[1Cthis\x1b[1Cfolder";

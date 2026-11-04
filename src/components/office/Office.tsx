@@ -1,16 +1,20 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import dynamic from "next/dynamic";
-import { answerAsk, endAgent } from "@/app/agent-actions";
+import { answerAsk, endAgent, tellAgent } from "@/app/agent-actions";
 import { addRoom, moveRoom, removeRoom, type ActionResult } from "@/app/office-actions";
 import { MAIN_ROOM_ID, type Cell, type OpenSide, type RoomRecord } from "@/lib/office/rooms";
+import { ackLine, parseCommand, shortReply, statusReply } from "@/lib/office/voice";
 import { OfficeWorld } from "@/lib/office/world";
 import type { AgentInfo } from "@/server/agents/registry";
+import { usePushToTalk } from "./push-to-talk";
 import { RepoPicker } from "./RepoPicker";
 import { Roster } from "./Roster";
 import { SpawnDialog } from "./SpawnDialog";
+import { useSpeechBubbles } from "./speech-bubbles";
 import type { Focus } from "./three/CameraRig";
+import { VoiceHud, type Heard } from "./VoiceHud";
 
 // three.js only loads in the browser, in its own chunk.
 const Office3D = dynamic(() => import("./three/Office3D"), { ssr: false, loading: () => <StageLoading /> });
@@ -29,13 +33,25 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
   const [spawnRoomId, setSpawnRoomId] = useState<string | null>(null);
   /** Agent whose monitor we're watching: its arrow and tag get out of the way. */
   const [watchingId, setWatchingId] = useState<string | null>(null);
+  const speech = useSpeechBubbles();
+  const { say } = speech;
+  const [heard, setHeard] = useState<Heard | null>(null);
+  /** Each agent's latest answer to you; null until the first list arrives. */
+  const answers = useRef<Map<string, string> | null>(null);
 
   // Live agent list from the server; it survives reloads because the agents run there.
   useEffect(() => {
     const stream = new EventSource("/api/agents");
-    stream.onmessage = (e) => setAgents(JSON.parse(e.data) as AgentInfo[]);
+    stream.onmessage = (e) => {
+      const list = JSON.parse(e.data) as AgentInfo[];
+      const before = answers.current;
+      answers.current = new Map(list.flatMap((a) => (a.said ? [[a.id, a.said.id] as const] : [])));
+      // Show new answers; ones given before this page opened are old news.
+      for (const a of list) if (before && a.said && before.get(a.id) !== a.said.id) say(a.id, shortReply(a.said.text) || "Done!");
+      setAgents(list);
+    };
     return () => stream.close();
-  }, []);
+  }, [say]);
 
   useEffect(() => {
     world.syncAgents(agents.map((a) => ({ ...a, phase: a.session.phase })));
@@ -61,6 +77,12 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (!heard) return;
+    const t = window.setTimeout(() => setHeard(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [heard]);
 
   useEffect(() => {
     if (!notice) return;
@@ -122,6 +144,24 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
     setFocus((f) => ({ roomId: agent.roomId, deskIndex: agent.deskIndex, request: f.request + 1 }));
   };
 
+  /** Push-to-talk: a question about them is answered at once; anything else goes to their session. */
+  const talk = async (words: string) => {
+    const present = agents.filter((a) => a.session.phase !== "ended");
+    const command = parseCommand(words, { agents: present, preferred: [watchingId, selectedId], openRoomId });
+    const agent = present.find((a) => a.id === command.agentId);
+    setHeard({ to: agent?.name ?? null, text: command.text || words });
+    if (!agent) return;
+    if (command.intent === "status") {
+      const status = snapshot.statuses.find((s) => s.id === agent.id);
+      say(agent.id, statusReply({ ...agent, away: status && status.activity !== "working" ? status.label : undefined }));
+      return;
+    }
+    const when = await tellAgent(agent.id, command.text).catch(() => null);
+    if (when) say(agent.id, ackLine(command.text, when, agent.session.phase));
+    else setNotice(`Couldn't pass that on to ${agent.name}.`);
+  };
+  const ptt = usePushToTalk({ onHeard: (text) => void talk(text), onProblem: setNotice });
+
   const pickFolder = async (path: string): Promise<string | null> => {
     if (!adding) return null;
     const res = await addRoom(path, adding.cell);
@@ -179,7 +219,11 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
           onAnswer={(agentId, askId, yes) => void answerAsk(agentId, askId, yes)}
           onWatch={watch}
           onEndAgent={(id) => void endAgent(id)}
-        />
+          speech={speech.lines}
+          onDismissSpeech={speech.dismiss}
+        >
+          <VoiceHud ptt={ptt} heard={heard} />
+        </Office3D>
         <Roster
           snapshot={snapshot}
           agents={agents}

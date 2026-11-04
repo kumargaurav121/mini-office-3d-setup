@@ -233,4 +233,117 @@ describe("agent registry", () => {
     reg.input(agent.id, "hello?");
     expect(spawned[0].pty.written).toEqual([]);
   });
+
+  it("carries running agents over to new code when dev mode reloads it", () => {
+    const { spawn } = fakeSpawner();
+    const old = registry(spawn);
+    const agent = old.spawnAgent(room, form);
+    // A registry made by an earlier version of this file: another class, and agents without newer fields.
+    Object.setPrototypeOf(old, class Earlier {}.prototype);
+    const raw = (old as unknown as { agents: Map<string, Record<string, unknown>> }).agents.get(agent.id)!;
+    delete raw.queue;
+    delete raw.said;
+
+    const reg = AgentRegistry.adopt(old);
+    expect(reg).toBe(old);
+    expect(reg.list()[0].said).toBeNull();
+    expect(reg.tell(agent.id, "also check the docs")).toBe("queued");
+  });
+
+  describe("talking to an agent", () => {
+    /** An agent whose first task is done, so it's free. */
+    async function idleAgent() {
+      const { spawn, spawned } = fakeSpawner();
+      const reg = registry(spawn);
+      const agent = reg.spawnAgent(room, form);
+      const token = spawned[0].req.env.MINI_OFFICE_AGENT_TOKEN;
+      const hook = (event: Parameters<AgentRegistry["handleHook"]>[2]) => reg.handleHook(agent.id, token, event);
+      await hook({ hook_event_name: "UserPromptSubmit", prompt: form.task });
+      await hook({ hook_event_name: "Stop", last_assistant_message: "Fixed it." });
+      return { reg, agent, pty: spawned[0].pty, hook };
+    }
+
+    it("types what you said into a free agent's session, then presses Enter", async () => {
+      vi.useFakeTimers();
+      const { reg, agent, pty } = await idleAgent();
+      expect(reg.tell(agent.id, "check today's best-selling stock")).toBe("now");
+      // Separate writes: text arriving with its Enter looks like a paste, and the Enter becomes a newline.
+      expect(pty.written).toEqual(["check today's best-selling stock"]);
+      vi.runAllTimers();
+      expect(pty.written).toEqual(["check today's best-selling stock", "\r"]);
+      // Busy right away (back to the desk), before Claude's own hook says so.
+      expect(reg.list()[0].session).toMatchObject({ phase: "working", request: "check today's best-selling stock" });
+    });
+
+    it("holds what you said while the agent is busy or waiting on you, and types it once it's done", async () => {
+      vi.useFakeTimers();
+      const { reg, agent, pty, hook } = await idleAgent();
+      await hook({ hook_event_name: "UserPromptSubmit", prompt: "add a test" });
+      expect(reg.tell(agent.id, "then update the docs")).toBe("queued");
+      void hook({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "npm test" } });
+      expect(reg.tell(agent.id, "and the changelog")).toBe("queued");
+      // Nothing typed: it would land in Claude's permission menu.
+      expect(pty.written).toEqual([]);
+
+      reg.answer(agent.id, reg.list()[0].session.ask!.id, true);
+      await hook({ hook_event_name: "Stop", last_assistant_message: "Test added." });
+      vi.runAllTimers();
+      expect(pty.written).toEqual(["then update the docs", "\r"]); // one at a time
+      await hook({ hook_event_name: "UserPromptSubmit", prompt: "then update the docs" });
+      await hook({ hook_event_name: "Stop", last_assistant_message: "Docs updated." });
+      vi.runAllTimers();
+      expect(pty.written.slice(2)).toEqual(["and the changelog", "\r"]);
+    });
+
+    it("says Claude's answer to what you said, and only that", async () => {
+      const { reg, agent, hook } = await idleAgent();
+      // Finishing the spawn task wasn't an answer to anything you said.
+      expect(reg.list()[0].said).toBeNull();
+
+      reg.tell(agent.id, "check today's best-selling stock");
+      await hook({ hook_event_name: "UserPromptSubmit", prompt: "check today's best-selling stock" });
+      await hook({ hook_event_name: "Stop", last_assistant_message: "NVDA, up 4% today." });
+      const said = reg.list()[0].said;
+      expect(said).toMatchObject({ text: "NVDA, up 4% today." });
+
+      // A prompt typed in the terminal isn't one you said; its answer stays on the screen.
+      await hook({ hook_event_name: "UserPromptSubmit", prompt: "thanks" });
+      await hook({ hook_event_name: "Stop", last_assistant_message: "You're welcome!" });
+      expect(reg.list()[0].said).toEqual(said);
+    });
+
+    it("doesn't mistake the answer to some other prompt for its answer to you", async () => {
+      const { reg, agent, hook } = await idleAgent();
+      reg.tell(agent.id, "check the stock");
+      // Claude never got that prompt (say the input box wasn't ready); you typed something else in the terminal.
+      await hook({ hook_event_name: "UserPromptSubmit", prompt: "thanks" });
+      await hook({ hook_event_name: "Stop", last_assistant_message: "You're welcome!" });
+      expect(reg.list()[0].said).toBeNull();
+    });
+
+    it("keeps a long answer to a size the browser can be sent on every update", async () => {
+      const { reg, agent, hook } = await idleAgent();
+      reg.tell(agent.id, "explain everything");
+      await hook({ hook_event_name: "UserPromptSubmit", prompt: "explain everything" });
+      await hook({ hook_event_name: "Stop", last_assistant_message: "word ".repeat(10_000) });
+      expect(reg.list()[0].said!.text.length).toBeLessThanOrEqual(4000);
+    });
+
+    it("types only plain words: no control keys, and no leading ! or / that would switch Claude Code's mode", async () => {
+      const { reg, agent, pty } = await idleAgent();
+      expect(reg.tell(agent.id, "  !rm -rf / \x1b[A\x03 please  ")).toBe("now");
+      expect(pty.written[0]).toBe("rm -rf / [A please");
+      expect(reg.tell(agent.id, " \n ")).toBeNull();
+      reg.end(agent.id);
+      expect(reg.tell(agent.id, "hello?")).toBeNull();
+    });
+
+    it("holds what you said while Claude Code is still starting up", () => {
+      const { spawn, spawned } = fakeSpawner();
+      const reg = registry(spawn);
+      const agent = reg.spawnAgent(room, form);
+      expect(reg.tell(agent.id, "also check the docs")).toBe("queued");
+      expect(spawned[0].pty.written).toEqual([]);
+    });
+  });
 });

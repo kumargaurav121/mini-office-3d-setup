@@ -18,6 +18,10 @@ export interface SessionView {
   /** Short human description of what's happening. */
   activity: string;
   ask: Ask | null;
+  /** The latest prompt it was given (the task, then anything typed or said to it). */
+  request: string | null;
+  /** Claude's final message when it last finished. */
+  lastReply: string | null;
 }
 
 /** The subset of a hook's stdin JSON we look at. */
@@ -26,10 +30,18 @@ export interface HookEvent {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   notification_type?: string;
+  /** UserPromptSubmit: what was submitted. */
+  prompt?: string;
+  /** Stop: Claude's final message. */
+  last_assistant_message?: string;
 }
 
+// Capped: the session is streamed to the browser on every change.
+const MAX_REQUEST = 1000;
+const MAX_REPLY = 4000;
+
 export function initialSession(): SessionView {
-  return { phase: "starting", activity: "Starting Claude Code…", ask: null };
+  return { phase: "starting", activity: "Starting Claude Code…", ask: null, request: null, lastReply: null };
 }
 
 const fileName = (p: unknown) => (typeof p === "string" ? p.split("/").filter(Boolean).pop() ?? p : "a file");
@@ -60,14 +72,15 @@ export function permissionTitle(tool: string | undefined, input: Record<string, 
 export function applyHook(view: SessionView, event: HookEvent): SessionView {
   switch (event.hook_event_name) {
     case "UserPromptSubmit":
+      return { ...view, phase: "working", activity: "Thinking…", ask: null, request: event.prompt?.slice(0, MAX_REQUEST) ?? view.request };
     case "PostToolUse":
-      return { phase: "working", activity: "Thinking…", ask: null };
+      return { ...view, phase: "working", activity: "Thinking…", ask: null };
     case "PreToolUse":
-      return { phase: "working", activity: describeTool(event.tool_name, event.tool_input), ask: null };
+      return { ...view, phase: "working", activity: describeTool(event.tool_name, event.tool_input), ask: null };
     case "Stop":
-      return { phase: "idle", activity: "Task done", ask: null };
+      return { ...view, phase: "idle", activity: "Task done", ask: null, lastReply: event.last_assistant_message?.slice(0, MAX_REPLY) ?? null };
     case "SessionEnd":
-      return { phase: "ended", activity: "Session ended", ask: null };
+      return { ...view, phase: "ended", activity: "Session ended", ask: null };
     default:
       return view;
   }
