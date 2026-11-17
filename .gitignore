@@ -42,3 +42,6 @@ next-env.d.ts
 
 # mini-office: rooms added from the UI
 /.office/
+
+# your own office setup (see office.config.example.json)
+/office.config.json

@@ -6,9 +6,14 @@ import { RoomStore, type OfficeConfig } from "./office-store";
 /** `~` and `~/…` -> the home folder; anything else resolved to an absolute path. */
 export const expandHome = (p: string) => (p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(1)) : resolve(p));
 
-/** office.config.json at the project root; `~` expands to the home folder. */
+/** Your office.config.json at the project root (not committed), else the example; `~` expands to the home folder. */
 export async function loadConfig(): Promise<OfficeConfig> {
-  const raw = JSON.parse(await readFile(join(process.cwd(), "office.config.json"), "utf8")) as OfficeConfig;
+  const read = (name: string) => readFile(join(process.cwd(), name), "utf8");
+  const text = await read("office.config.json").catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return read("office.config.example.json");
+    throw err;
+  });
+  const raw = JSON.parse(text) as OfficeConfig;
   return { mainRoom: expandHome(raw.mainRoom), repoRoots: raw.repoRoots.map(expandHome) };
 }
 
