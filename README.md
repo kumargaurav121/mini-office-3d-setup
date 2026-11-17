@@ -85,6 +85,8 @@ The side panel lists every agent with what it's doing right now:
 - **Watch** flies the camera to the agent's monitor.
 - **End** stops the session. Click it twice; the second click confirms.
 
+If your system is set to reduce motion, idle agents stay at their desks instead of wandering off.
+
 Each session keeps a fixed ID, shown when you hover an agent in the side panel. Resume a session later in your own terminal with `claude --resume <id>`.
 
 ### Permission bubbles
@@ -135,10 +137,21 @@ Space still types a space in text fields and the terminal, and still presses a b
 ## Safety and privacy
 
 - **Agents are real.** Each one is a Claude Code session that can read, edit and run things in its folder with your user's permissions, on your Claude account. Pick the permission mode with that in mind. **Auto** lets Claude act without asking on anything it doesn't judge risky.
-- **Localhost only.** The dev server listens on 127.0.0.1, and the endpoints that start or control agents refuse requests not addressed to localhost. Don't expose this app to a network.
+- **Localhost only.** Both `npm run dev` and `npm start` listen on 127.0.0.1 only, and the endpoints that start or control agents refuse requests not addressed to localhost. Don't expose this app to a network.
 - **Agents are meant to stop with the server.** When it shuts down it ends their sessions; if a `claude` process ever lingers, `pgrep -fl "claude.*--session-id"` finds it. Transcripts stay resumable with `claude --resume`.
 - **Push-to-talk audio goes to Google.** Chrome transcribes speech with Google's online service. Nothing is recorded unless you hold Space or the talk button.
 - **Folder access:** `repoRoots` limits which folders can become rooms. The default (`~`) allows anything in your home folder.
+
+## Troubleshooting
+
+- **"Couldn't start Claude Code. Is the `claude` CLI installed and on your PATH?"** Run `claude --version` in the terminal you start Mini Office from. If it isn't found there, install Claude Code or fix your `PATH`, then restart `npm run dev`.
+- **`posix_spawnp failed`** when spawning an agent: `node-pty`'s helper isn't executable. Run `npm install` again, or `node scripts/fix-node-pty.mjs`.
+- **An agent stays on "Starting Claude Code…"**: **Watch** it. Claude Code may be waiting for something in its terminal, such as logging in, and you can answer it there.
+- **Agents in a room can't start after its folder was moved or deleted**: update `mainRoom` in `office.config.json`, or remove the room and add it again from its new place.
+- **"The microphone is blocked…"**: allow the microphone for 127.0.0.1 from the icon in Chrome's address bar, then try again.
+- **"Couldn't reach the speech service…"**: Chrome needs an internet connection to transcribe speech.
+- **Port 3000 is taken**: start on another port with `npm run dev -- -p 3001`.
+- **To see the welcome screen again**: delete `office.config.json` and reload.
 
 ## Development
 
