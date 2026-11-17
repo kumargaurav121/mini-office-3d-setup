@@ -2,18 +2,21 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { browseFolder, listRepos } from "@/app/office-actions";
-import type { Side } from "@/lib/office/rooms";
 import type { RepoEntry } from "@/server/office-store";
 
 interface Props {
-  side: Side;
-  /** Name of the room the new one will attach to. */
-  roomName: string;
+  title: string;
+  hint: string;
+  /** Label of the button that uses a pasted path. */
+  pickLabel: string;
+  /** Shown while a pick is being saved. */
+  pendingText: string;
   /** Folders that already have a room. */
   usedPaths: Set<string>;
-  /** Resolves to an error message, or null once the room exists. */
+  /** Resolves to an error message, or null once the folder is in use. */
   onPick: (path: string) => Promise<string | null>;
-  onClose: () => void;
+  /** Leave out to make the picker one you can't dismiss (choosing the first room). */
+  onClose?: () => void;
 }
 
 interface Crumb {
@@ -23,10 +26,10 @@ interface Crumb {
 }
 
 /**
- * Modal for choosing the folder behind a new room: search local git repos,
- * step into one to pick a subfolder, or paste a path. Mount it fresh per use.
+ * Modal for choosing the folder behind a room: search local git repos, step
+ * into one to pick a subfolder, or paste a path. Mount it fresh per use.
  */
-export function RepoPicker({ side, roomName, usedPaths, onPick, onClose }: Props) {
+export function RepoPicker({ title, hint, pickLabel, pendingText, usedPaths, onPick, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [repos, setRepos] = useState<RepoEntry[] | null>(null);
   const [trail, setTrail] = useState<Crumb[]>([]);
@@ -82,18 +85,18 @@ export function RepoPicker({ side, roomName, usedPaths, onPick, onClose }: Props
   return (
     <dialog
       ref={dialog}
-      onClose={onClose}
+      // Esc closes a dialog even when told not to if pressed twice; a picker you can't dismiss just reopens.
+      onCancel={(e) => !onClose && e.preventDefault()}
+      onClose={() => (onClose ? onClose() : dialog.current?.showModal())}
       aria-labelledby="repo-picker-title"
       className="m-auto w-[min(640px,calc(100vw-32px))] border-2 border-line bg-panel p-0 text-ink shadow-[6px_6px_0_0_rgba(0,0,0,0.45)] backdrop:bg-black/60"
     >
       <div className="flex max-h-[min(640px,calc(100dvh-64px))] flex-col">
         <header className="border-b-2 border-line px-4 pt-4 pb-3">
           <h2 id="repo-picker-title" className="font-pixel text-lg leading-none">
-            New room {side} of {roomName}
+            {title}
           </h2>
-          <p className="mt-1.5 font-mono text-[11px] text-muted">
-            Pick a local repo, or step into one (›) to choose a folder inside it.
-          </p>
+          <p className="mt-1.5 font-mono text-[11px] text-muted">{hint}</p>
           <input
             autoFocus
             type="search"
@@ -179,18 +182,20 @@ export function RepoPicker({ side, roomName, usedPaths, onPick, onClose }: Props
               disabled={pending || !typed.trim()}
               className="border-2 border-[#1d1a2b] bg-accent px-3 font-mono text-xs text-[#1d1a2b] disabled:opacity-40"
             >
-              Add
+              {pickLabel}
             </button>
-            <button
-              type="button"
-              onClick={() => dialog.current?.close()}
-              className="border-2 border-line px-3 font-mono text-xs text-muted hover:text-ink"
-            >
-              Cancel
-            </button>
+            {onClose && (
+              <button
+                type="button"
+                onClick={() => dialog.current?.close()}
+                className="border-2 border-line px-3 font-mono text-xs text-muted hover:text-ink"
+              >
+                Cancel
+              </button>
+            )}
           </form>
           <p role="status" className="mt-2 min-h-4 font-mono text-[11px]">
-            {pending ? <span className="text-muted">Building the room…</span> : error && <span className="text-red-400">{error}</span>}
+            {pending ? <span className="text-muted">{pendingText}</span> : error && <span className="text-red-400">{error}</span>}
           </p>
         </footer>
       </div>

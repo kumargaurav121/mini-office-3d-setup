@@ -1,7 +1,10 @@
 "use server";
 
+import { headers } from "next/headers";
+import { refresh } from "next/cache";
 import type { Cell, RoomRecord } from "@/lib/office/rooms";
-import { expandHome, getStore, loadConfig } from "@/server/office";
+import { isLocalHost } from "@/server/agents";
+import { expandHome, getStore, loadConfig, setMainRoom } from "@/server/office";
 import { findRepos, listFolders, RoomError, type RepoEntry } from "@/server/office-store";
 
 export type ActionResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -25,6 +28,17 @@ export async function browseFolder(path: string): Promise<ActionResult<RepoEntry
 
 export async function addRoom(path: string, cell: Cell): Promise<ActionResult<RoomRecord[]>> {
   return attempt(async () => (await getStore()).addRoom(expandHome(path), cell));
+}
+
+/** First run: make `path` the main room (writes office.config.json), then show the office. */
+export async function chooseMainRoom(path: string): Promise<ActionResult<null>> {
+  if (!isLocalHost((await headers()).get("host"))) return { ok: false, error: "Set up the office from this computer (localhost)." };
+  const res = await attempt(async () => {
+    await setMainRoom(expandHome(String(path)));
+    return null;
+  });
+  if (res.ok) refresh();
+  return res;
 }
 
 export async function removeRoom(id: string): Promise<ActionResult<RoomRecord[]>> {

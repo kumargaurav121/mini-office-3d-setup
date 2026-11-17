@@ -45,8 +45,12 @@ export class RoomStore {
 
   async rooms(): Promise<RoomRecord[]> {
     const main = this.config.mainRoom;
-    const saved = await this.load();
-    return [{ id: MAIN_ROOM_ID, name: basename(main), path: main, cell: { x: 0, z: 0 } }, ...saved.rooms];
+    return [{ id: MAIN_ROOM_ID, name: basename(main), path: main, cell: { x: 0, z: 0 } }, ...(await this.addedRooms())];
+  }
+
+  /** The rooms added around the main one. */
+  async addedRooms(): Promise<RoomRecord[]> {
+    return (await this.load()).rooms;
   }
 
   /** Add the repo at `path` as a room in `cell`; returns the updated room list. */
@@ -56,20 +60,31 @@ export class RoomStore {
 
   private async addRoomUnlocked(rawPath: string, cell: Cell): Promise<RoomRecord[]> {
     if (!Number.isInteger(cell?.x) || !Number.isInteger(cell?.z)) throw new RoomError("That isn't a spot on the grid.");
-    const path = resolve(rawPath);
-    const isFolder = await stat(path).then((s) => s.isDirectory(), () => false);
-    if (!isFolder) throw new RoomError(`${path} isn't a folder.`);
-    await assertInsideRoots(this.config.repoRoots, path);
     const rooms = await this.rooms();
-    // Compare real paths so a symlink can't sneak in a second room for the same folder.
-    const real = await realpath(path);
-    const taken = await Promise.all(rooms.map((r) => realpath(r.path).catch(() => resolve(r.path))));
-    if (taken.includes(real)) throw new RoomError(`${basename(path)} already has a room.`);
+    const path = await this.usableFolder(rawPath, rooms);
     if (!canPlaceRoom(rooms, cell)) throw new RoomError("That spot is taken or isn't next to a room.");
     const saved = await this.load();
     saved.rooms.push({ id: roomIdForPath(path), name: basename(path), path, cell });
     await this.save(saved);
     return this.rooms();
+  }
+
+  /** `rawPath` resolved, if it can be a new office's main room: a folder inside the roots that isn't an added room. */
+  async mainRoomFolder(rawPath: string): Promise<string> {
+    return this.usableFolder(rawPath, await this.addedRooms());
+  }
+
+  /** `rawPath` resolved, if it's a folder inside the roots that none of `rooms` already uses. */
+  private async usableFolder(rawPath: string, rooms: RoomRecord[]): Promise<string> {
+    const path = resolve(rawPath);
+    const isFolder = await stat(path).then((s) => s.isDirectory(), () => false);
+    if (!isFolder) throw new RoomError(`${path} isn't a folder.`);
+    await assertInsideRoots(this.config.repoRoots, path);
+    // Compare real paths so a symlink can't sneak in a second room for the same folder.
+    const real = await realpath(path);
+    const taken = await Promise.all(rooms.map((r) => realpath(r.path).catch(() => resolve(r.path))));
+    if (taken.includes(real)) throw new RoomError(`${basename(path)} already has a room.`);
+    return path;
   }
 
   /** Remove a room from the office (the folder on disk is untouched). */

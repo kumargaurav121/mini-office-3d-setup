@@ -31,17 +31,16 @@ Linux should work but is untested. Windows isn't supported: the app relies on Un
 git clone https://github.com/kumargaurav121/mini-office-3d-setup.git
 cd mini-office-3d-setup
 npm install
-cp office.config.example.json office.config.json   # then edit it, see below
 npm run dev
 ```
 
-Open **http://127.0.0.1:3000**.
+Open **http://127.0.0.1:3000**. The first time, Mini Office asks which folder should be your main room: pick one of your repos, step into a folder, or paste the path of any folder in your home directory. That choice is saved to `office.config.json`, and the office opens.
 
 `npm install` also makes `node-pty`'s helper executable (a `postinstall` step). Without it, starting an agent fails with `posix_spawnp failed`. Newer npm versions may warn that `node-pty`'s own install scripts were skipped; that's expected, because its prebuilt binaries are used.
 
 ## Configuration
 
-`office.config.json` sits in the project root and is yours alone (it's gitignored):
+`office.config.json` sits in the project root and is yours alone (it's gitignored). The first run writes it for you; edit it any time, then reload:
 
 ```json
 {
@@ -55,7 +54,7 @@ Open **http://127.0.0.1:3000**.
 | `mainRoom` | The folder for the main room, in the middle of the office. `~` means your home folder; a relative path is relative to this project. |
 | `repoRoots` | Folders the room picker may use. It lists git repos up to 6 levels deep under them, and lets you browse or paste any folder inside them. |
 
-Without an `office.config.json`, the app uses `office.config.example.json`. That makes this project's own folder the main room and lets you pick any folder in your home directory.
+Until `office.config.json` exists, the app takes its `repoRoots` from `office.config.example.json`, which allows any folder in your home directory. To switch to a different main room later, change `mainRoom` in your `office.config.json`; to see the first-run picker again, delete the file.
 
 The rooms you add, and where they sit, are saved in `.office/rooms.json`. Delete that file to start over with just the main room.
 
@@ -154,6 +153,7 @@ The tests cover the logic that doesn't need a browser:
 
 - the room grid rules
 - the room store and repo scan
+- first-run setup (choosing the main room)
 - the agent registry, against a fake terminal
 - how hook events become session state
 - how spoken sentences are understood

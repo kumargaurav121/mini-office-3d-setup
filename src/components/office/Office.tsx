@@ -257,8 +257,10 @@ export function Office({ initialRooms }: { initialRooms: RoomRecord[] }) {
       {adding && anchorRoom && (
         <RepoPicker
           key={`${adding.roomId}:${adding.side}`}
-          side={adding.side}
-          roomName={anchorRoom.name}
+          title={`New room ${adding.side} of ${anchorRoom.name}`}
+          hint="Pick a local repo, or step into one (›) to choose a folder inside it."
+          pickLabel="Add"
+          pendingText="Building the room…"
           usedPaths={new Set(snapshot.rooms.map((r) => r.path))}
           onPick={pickFolder}
           onClose={() => setAdding(null)}

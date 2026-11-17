@@ -1,22 +1,23 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { readSetup, saveMainRoom, statePathFor, type OfficeSetup } from "./office-config";
 import { RoomStore, type OfficeConfig } from "./office-store";
 
-/** `~` and `~/…` -> the home folder; anything else resolved to an absolute path. */
-export const expandHome = (p: string) => (p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(1)) : resolve(p));
+export { expandHome } from "./office-config";
 
-/** Your office.config.json at the project root (not committed), else the example; `~` expands to the home folder. */
+/** This office's setup: "choose" until a main room has been picked (a fresh clone). */
+export function officeSetup(): Promise<OfficeSetup> {
+  return readSetup(process.cwd());
+}
+
+/** First run: make `path` this office's main room (creates office.config.json). */
+export function setMainRoom(path: string): Promise<void> {
+  return saveMainRoom(process.cwd(), path);
+}
+
+/** The office's config: yours, or the example's defaults before you've picked a main room. */
 export async function loadConfig(): Promise<OfficeConfig> {
-  const read = (name: string) => readFile(join(process.cwd(), name), "utf8");
-  const text = await read("office.config.json").catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return read("office.config.example.json");
-    throw err;
-  });
-  const raw = JSON.parse(text) as OfficeConfig;
-  return { mainRoom: expandHome(raw.mainRoom), repoRoots: raw.repoRoots.map(expandHome) };
+  return (await officeSetup()).config;
 }
 
 export async function getStore(): Promise<RoomStore> {
-  return new RoomStore({ config: await loadConfig(), statePath: join(process.cwd(), ".office", "rooms.json") });
+  return new RoomStore({ config: await loadConfig(), statePath: statePathFor(process.cwd()) });
 }
